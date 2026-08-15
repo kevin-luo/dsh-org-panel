@@ -1,7 +1,7 @@
 {
   "name": "dsh-org-panel",
-  "version": "1.0.0",
-  "description": "「纯牛马」—— 多智能体数字员工指挥台插件：从真实派活提炼老板指令、员工任务进度与交付结果，游戏化办公室看板 + 手机群聊",
+  "version": "1.1.0",
+  "description": "「纯牛马」—— DeepSeek Harness 多智能体数字员工指挥台插件：可视化真实 subagent/workflow 派活，提供可筛选员工工位与可交互群聊",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -16,10 +16,8 @@
     }
   },
   "files": [
-    "lib/index.js",
-    "lib/client.js",
-    "lib/index.d.ts",
-    "lib/client.d.ts"
+    "lib",
+    "cordis.example.yml"
   ],
   "dsh": {
     "client": {
@@ -31,7 +29,7 @@
     }
   },
   "peerDependencies": {
-    "react": "^18.2.0",
+    "react": "^18.2.0 || ^19.0.0",
     "@deepseek-ai/cordis": "^4.0.1"
   },
   "devDependencies": {
@@ -40,16 +38,28 @@
     "@types/react": "^18.3.0"
   },
   "scripts": {
-    "build": "tsdown"
+    "build": "tsdown src/index.ts src/client.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "keywords": [
     "dsh",
     "dsh-plugin",
     "deepseek-harness",
+    "deepseek-harness-plugin",
     "multi-agent",
     "subagent",
+    "workflow",
     "visualization",
-    "orchestration"
+    "orchestration",
+    "digital-employees"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kevin-luo/dsh-org-panel.git"
+  },
+  "homepage": "https://github.com/kevin-luo/dsh-org-panel#readme",
   "license": "MIT"
 }
