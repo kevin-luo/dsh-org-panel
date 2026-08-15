@@ -85,6 +85,12 @@ git push -u origin main
 typert `@Remote` RPC，client 通过 `ctx.remote` 调用。这需要 TypeScript 装饰器 + typert 构建，
 参考官方 `@deepseek-ai/dsh-client-ui-cordis` 的 `dynamicCordisRunner` Remote 命名空间。
 
+## 进阶：AI 交付总结
+
+动态插件版已实现（`kingdom.summarize`）：host 半边用 `llm.stream` 调当前模型，把员工交付内容压缩成一句话结论
+（带内存缓存，失败时降级为截断摘要）。正式包移植时，在 `src/index.ts` 加一个 `@Remote` 方法（输入交付文本、
+输出一句话），client 用 `ctx.remote` 调用，同前述 typert RPC 路线。
+
 ## License
 
 MIT
