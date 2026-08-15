@@ -13,13 +13,18 @@
     "./client": {
       "types": "./lib/client.d.ts",
       "default": "./lib/client.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "lib",
-    "cordis.example.yml"
+    "cordis.example.yml",
+    "cordis.patch.yml"
   ],
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
@@ -38,8 +43,12 @@
     "@types/react": "^18.3.0"
   },
   "scripts": {
-    "build": "tsdown src/index.ts src/client.tsx",
-    "typecheck": "tsc --noEmit"
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "prepack": "npm run build"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "engines": {
     "node": ">=18"

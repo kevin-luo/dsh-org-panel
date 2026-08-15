@@ -18,7 +18,7 @@
 - 交付结果的结构化摘要；
 - 卡住、完成、待命等真实状态。
 
-然后用「公司办公室 + 手机群聊」的游戏化外壳把它呈现出来。
+然后用「员工办公室 + 工作群」的界面把它呈现出来，不生成任何演示任务。
 
 ### 功能亮点
 
@@ -29,21 +29,24 @@
 - **💬 牛马摸鱼群（可交互）**：
   - 真实派活、交付、卡住会变成群聊动态；
   - 老板可以直接在群里发消息；
-  - 快捷指令：`进度`、`谁在摸鱼`、`交付清单`；
+  - 快捷指令：`进度`、`谁在待命`、`交付清单`；
   - 员工会根据当前真实任务状态回复，不会伪造任务。
 - **🔎 筛选与搜索**：按状态筛选员工，按员工名、任务内容、交付摘要搜索。
-- **👤 员工档案**：点击员工查看人设、当前工位、能力（工具 + 技能），并可只看 TA 的工位。
+- **👤 员工档案**：点击员工查看人设、当前工位、能力（工具 + 技能），可只看 TA 的工位，也可一键复制派活指令后粘贴到主对话发起真实派活。
 - **🧩 可配置扩展**：员工与岗位可通过 composition 配置覆盖，不写死。
 
-### 安装
+### 安装（推荐：插件市场 / npm）
 
-已发布的 npm 包：
+- 在 DSH 插件市场搜索 `dsh-org-panel` 或 `纯牛马`，一键安装。
+- 或使用命令行：
 
 ```bash
 pnpm add dsh-org-panel
 ```
 
-本地源码构建：
+安装后刷新/重启 DSH，会话顶部会出现「纯牛马」标签页；**不需要运行任何本地脚本**。
+
+本地源码构建仅用于二次开发：
 
 ```bash
 pnpm install
@@ -77,11 +80,11 @@ pnpm typecheck      # TypeScript 检查
    - 右侧群聊同步真实动态。
 3. 在群聊输入框直接发消息：
    - 输入 `进度`：返回当前任务统计。
-   - 输入 `谁在摸鱼`：返回待命与忙碌员工名单。
+   - 输入 `谁在待命`：返回待命与忙碌员工名单。
    - 输入 `交付清单`：返回已完成交付列表。
    - @员工名（如 `小刘`）：该员工会按自己的真实状态回复。
 4. 用顶部筛选按钮只看某类状态；用搜索框快速定位员工或任务。
-5. 点击员工卡查看档案，点「只看 TA 的工位」聚焦该员工。
+5. 点击员工卡查看档案；可点「只看 TA 的工位」聚焦，或点「复制派活指令」后粘贴到主对话发起真实派活。
 
 ### 数据来源
 
@@ -175,7 +178,7 @@ MIT
 - structured delivery summaries;
 - real states such as running, delivered, blocked, and idle.
 
-All of this is wrapped in a playful "company office + mobile group chat" shell.
+All of this is presented as a "staff office + work group" board, with no demo or fabricated tasks.
 
 ### Highlights
 
@@ -186,21 +189,24 @@ All of this is wrapped in a playful "company office + mobile group chat" shell.
 - **💬 Interactive group chat**:
   - Real dispatches, deliveries, and errors appear as chat activity.
   - You can type messages as the boss.
-  - Quick commands: `进度` (progress), `谁在摸鱼` (who is idle), `交付清单` (delivery list).
+  - Quick commands: `进度` (progress), `谁在待命` (who is idle), `交付清单` (delivery list).
   - Employees reply based on their actual current task state; the plugin never fabricates tasks.
 - **🔎 Filter and search**: filter employees by status and search by employee, task, or delivery text.
-- **👤 Employee profile**: click a card to view persona, current tasks, tools, and skills, and focus on that employee's station.
+- **👤 Employee profile**: click a card to view persona, current tasks, tools, and skills, focus on that employee's station, or copy a dispatch prompt and paste it into the main conversation to start real work.
 - **🧩 Configurable**: staff and roles can be overridden through composition config.
 
-### Installation
+### Installation (recommended: plugin market / npm)
 
-Published npm package:
+- Search `dsh-org-panel` or `纯牛马` in the DSH plugin market and install it in one click.
+- Or use the command line:
 
 ```bash
 pnpm add dsh-org-panel
 ```
 
-Build from source:
+After refreshing/restarting DSH, the **Pure Niuma** tab will appear in the conversation view. **No local script is required.**
+
+Building from source is only needed for secondary development:
 
 ```bash
 pnpm install
@@ -234,11 +240,11 @@ Restart DSH and the **Pure Niuma** tab will appear.
    - The group chat mirrors real activity.
 3. Type in the chat input:
    - `进度`: current task statistics.
-   - `谁在摸鱼`: idle and busy employees.
+   - `谁在待命`: idle and busy employees.
    - `交付清单`: completed deliveries.
    - Mention an employee by name (for example `小刘`): that employee replies according to their real state.
 4. Use the status filters and the search box to locate employees or tasks quickly.
-5. Click an employee card to open their profile, then use **Focus on this station** to filter the board.
+5. Click an employee card to open their profile; use **Focus on this station** to filter the board, or **Copy dispatch prompt** and paste it into the main conversation to start real work.
 
 ### Data source
 

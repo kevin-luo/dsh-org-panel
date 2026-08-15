@@ -141,14 +141,8 @@ const DEFAULT_STAFF: StaffDef[] = [
   { id: 'doc', name: '静静', role: '文档专员', emoji: '📖', roleId: 'doc', aliases: ['静静', '文档专员', 'doc', '文档'], intro: '知识库守门人，写文档、理资料、记笔记。', lines: { idle: ['整理文档库', '等写作任务'], running: ['文档写着呢', '资料整理中'], done: ['文档更新好了', '手册写完了'], wait: ['缺素材，等资料'] } },
 ]
 
-const FALLBACK_CHAT = [
-  { who: '小刘', emoji: '💻', text: '@阿明 需求又改了？' },
-  { who: '阿明', emoji: '📋', text: '@小刘 老板要的，加一下' },
-  { who: '大壮', emoji: '🛠', text: '环境我部署好了，谁测一下' },
-  { who: '小丽', emoji: '🔎', text: '查到一个关键竞品动态' },
-  { who: '静静', emoji: '📖', text: '文档同步到知识库了' },
-  { who: '老王', emoji: '👔', text: '大家按排期来，别乱' },
-]
+// 不设置任何虚构群聊内容。
+// 群聊只展示真实派活动态，以及老板通过输入框发起的真实交互消息。
 
 const STATUS_LABEL: Record<string, string> = {
   running: '干活中',
@@ -324,9 +318,15 @@ function statusFromTasks(tasks: Delegation[]): string {
 }
 
 function lineOf(staff: StaffDef | undefined, status: string, tick: number): string {
-  const arr = staff?.lines?.[status] || staff?.lines?.idle
-  if (!arr || arr.length === 0) return ''
-  return arr[tick % arr.length]
+  const arr = status === 'idle' ? undefined : staff?.lines?.[status]
+  if (arr && arr.length > 0) return arr[tick % arr.length]
+  const fallback: Record<string, string> = {
+    idle: '待命中：等真实派活',
+    running: '干活中：进度见任务卡',
+    done: '已交付：结果见任务卡',
+    wait: '卡住了：等待处理',
+  }
+  return fallback[status] || fallback.idle
 }
 
 function formatDuration(ms: number | null): string {
@@ -377,12 +377,8 @@ function systemEvents(delegations: Delegation[], staff: StaffDef[]): string[] {
   return events.slice(0, 8)
 }
 
-function baseChatMessages(events: string[]): ChatMessage[] {
-  if (events.length > 0) return []
-  return [
-    { key: 'init-1', who: '老板', emoji: '👑', me: true, text: '都到齐了吗？' },
-    { key: 'init-2', who: '老王', emoji: '👔', me: false, text: '到了，等活儿' },
-  ]
+function baseChatMessages(): ChatMessage[] {
+  return []
 }
 
 function statusReport(delegations: Delegation[], staff: StaffDef[]): string {
@@ -410,6 +406,31 @@ function deliveryReport(delegations: Delegation[], staff: StaffDef[]): string {
   return '已交付 ' + done.length + ' 个：' + done.map((d) => staffOf(d.staffId, staff)?.name + '·' + clip(d.desc, 16)).join('、')
 }
 
+function dispatchTemplate(staff: StaffDef | undefined): string {
+  if (!staff) return ''
+  return `派 ${staff.name}（${staff.role}）去做：`
+}
+
+async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  } catch {}
+  try {
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    return ok
+  } catch {
+    return false
+  }
+}
+
 function makeReply(text: string, delegations: Delegation[], statuses: Record<string, string>, staff: StaffDef[], tick: number): ChatMessage {
   const q = text.trim()
   let responder = staff.find((s) => s.roleId === 'tech-lead') || staff[0]
@@ -425,7 +446,7 @@ function makeReply(text: string, delegations: Delegation[], statuses: Record<str
     replyText = errors.length ? '卡住 ' + errors.length + ' 个：' + errors.map((d) => clip(d.desc, 20)).join('、') : '暂时没有卡住的任务。'
     responder = staff.find((s) => (statuses[s.id] || 'idle') === 'wait') || responder
   } else if (/派活|安排|拆|subagent|工作流/.test(q)) {
-    replyText = '收到。这里只展示真实派活记录，我不会伪造任务；老板在对话框里发起 subagent/workflow 后，这边会自动上工位。'
+    replyText = '这里只播报真实派活，不会伪造任务。点开员工卡，用「复制派活指令」粘贴到主对话发起真实派活。'
   } else {
     const mentioned = staff.find((s) => (s.aliases || []).concat([s.name]).some((a) => q.includes(a)))
     responder = mentioned || staff.find((s) => (statuses[s.id] || 'idle') === 'running') || responder
@@ -513,11 +534,12 @@ function ChatPanel(props: {
   }
   return createElement('div', { className: 'dsh-org-chat-panel' },
     createElement('div', { className: 'dsh-org-chat-head' },
-      createElement('span', { className: 'dsh-org-chat-title' }, '💬 牛马摸鱼群'),
-      createElement('span', { className: 'dsh-org-chat-notice' }, '群公告：报进度不 @全体成员'),
+      createElement('span', { className: 'dsh-org-chat-title' }, '💬 牛马工作群'),
+      createElement('span', { className: 'dsh-org-chat-notice' }, '群公告：本群只播报真实动态，不演戏'),
     ),
     createElement('div', { className: 'dsh-org-chat-body', ref: bodyRef },
       events.map((e, i) => createElement('div', { className: 'dsh-org-sys', key: 'sys-' + i }, e)),
+        messages.length === 0 ? createElement('div', { className: 'dsh-org-sys' }, '暂无真实派活。可在下方发消息，或到主对话发起 subagent / workflow。') : null,
       messages.map((m) => createElement('div', { className: 'dsh-org-chat-msg ' + (m.me ? 'me' : 'them'), key: m.key },
         createElement('span', { className: 'dsh-org-chat-avatar' }, m.emoji),
         createElement('div', { className: 'dsh-org-chat-wrap' },
@@ -527,7 +549,7 @@ function ChatPanel(props: {
       )),
     ),
     chatEnabled ? createElement('div', { className: 'dsh-org-chat-quick' },
-      ['进度', '谁在摸鱼', '交付清单'].map((q) => createElement('button', { type: 'button', key: q, onClick: () => onSend(q) }, q)),
+      ['进度', '谁在待命', '交付清单'].map((q) => createElement('button', { type: 'button', key: q, onClick: () => onSend(q) }, q)),
     ) : null,
     chatEnabled ? createElement('form', { className: 'dsh-org-chat-input', onSubmit: submit },
       createElement('input', { value: text, onChange: (e: any) => setText(e.target.value), placeholder: '以老板身份发消息…' }),
@@ -541,6 +563,7 @@ function StaffDetail(props: {
   onClose: () => void; onFocus: (id: string) => void
 }) {
   const { staff, status, tasks, roles, onClose, onFocus } = props
+  const [copied, setCopied] = useState(false)
   const role = roleOf(staff.roleId || staff.id, roles)
   return createElement('div', { className: 'dsh-org-modal-mask', onClick: onClose },
     createElement('div', { className: 'dsh-org-modal', onClick: (e: any) => e.stopPropagation() },
@@ -558,6 +581,7 @@ function StaffDetail(props: {
         tasks.length ? tasks.slice(0, 3).map((t) => createElement(TaskRow, { key: t.callId, task: t, staff }))
           : createElement('div', { className: 'dsh-org-note' }, '暂无任务'),
         createElement('button', { type: 'button', className: 'dsh-org-focus-action', onClick: () => onFocus(staff.id) }, '只看 TA 的工位'),
+          createElement('button', { type: 'button', className: 'dsh-org-focus-action', onClick: () => { void copyText(dispatchTemplate(staff)); setCopied(true); window.setTimeout(() => setCopied(false), 2000) } }, copied ? '已复制，去主对话粘贴' : '复制派活指令'),
         createElement('div', { className: 'dsh-org-modal-label' }, '它会的能力'),
         role.tools.length ? createElement('div', { className: 'dsh-org-modal-tools' }, role.tools.map((t) => createElement('span', { className: 'dsh-org-tool', key: t }, t)))
           : createElement('div', { className: 'dsh-org-note' }, '暂无记录的工具'),
@@ -640,19 +664,6 @@ export function OrgView(props: any) {
   const delegations = useMemo(() => extractDelegations(nodes || [], runningCalls || [], roles, staff), [nodes, runningCalls, roles, staff])
   const events = useMemo(() => systemEvents(delegations, staff), [delegations, staff])
 
-  useEffect(() => {
-    if (!timer || typeof timer.interval !== 'function') return
-    const off = timer.interval(() => {
-      if (delegations.length > 0) return
-      setExtraMessages((prev) => {
-        const fallback = FALLBACK_CHAT[Math.floor(Math.random() * FALLBACK_CHAT.length)]
-        const next = prev.concat([{ key: 'amb-' + Date.now(), who: fallback.who, emoji: fallback.emoji, me: false, text: fallback.text }])
-        return next.length > 24 ? next.slice(next.length - 24) : next
-      })
-    }, 7500)
-    return () => { if (typeof off === 'function') off() }
-  }, [timer, delegations.length])
-
   const statuses: Record<string, string> = {}
   const tasksMap: Record<string, Delegation[]> = {}
   let runningCount = 0, doneCount = 0, waitCount = 0, idleCount = 0
@@ -701,7 +712,7 @@ export function OrgView(props: any) {
     timersRef.current.push(timeout)
   }
 
-  const baseMessages = useMemo(() => baseChatMessages(events), [events])
+  const baseMessages = useMemo(() => baseChatMessages(), [])
   const chatMessages = useMemo(() => {
     const merged = baseMessages.concat(extraMessages)
     return merged.length > 40 ? merged.slice(merged.length - 40) : merged
@@ -712,7 +723,7 @@ export function OrgView(props: any) {
     createElement('div', { className: 'dsh-org-head' },
       createElement('div', null,
         createElement('div', { className: 'dsh-org-title' }, '👑 ' + config.companyName + ' · 牛马'),
-        createElement('div', { className: 'dsh-org-sub' }, '真实派活驱动 · 可点击筛选 · 群聊可交互'),
+        createElement('div', { className: 'dsh-org-sub' }, '只展示真实派活 · 不演戏 · 群聊可交互'),
       ),
       createElement('div', { className: 'dsh-org-stats' }, `${runningCount} 干活 · ${waitCount} 卡住 · ${doneCount} 已交付 · ${idleCount} 待命`),
     ),
@@ -738,7 +749,7 @@ export function OrgView(props: any) {
           createElement('span', null, '牛马办公室'),
           createElement('span', null, visibleStaff.length + ' / ' + staff.length + ' 人'),
         ),
-        delegations.length === 0 ? createElement('div', { className: 'dsh-org-empty' }, '暂无派活。在对话里发起 subagent / workflow 真实派活后，这里会自动生成工位、任务与进度；现在也可以直接在右侧群里发消息试试。') : null,
+        delegations.length === 0 ? createElement('div', { className: 'dsh-org-empty' }, '暂无真实派活。插件不会生成演示任务；请到主对话发起 subagent / workflow，或点开员工卡复制派活指令。') : null,
         visibleStaff.length === 0 ? createElement('div', { className: 'dsh-org-empty' }, '没有符合条件的员工，换个筛选或搜索词试试。') : null,
         createElement('div', { className: 'dsh-org-staff' },
           visibleStaff.map((st, i) => createElement(StaffCard, {

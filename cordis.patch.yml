@@ -1,0 +1,8 @@
+# Default composition contributed when this package is installed as a DSH bundle.
+- insert:
+    - id: org-panel
+      name: dsh-org-panel
+      config:
+        tabLabel: 纯牛马
+        companyName: 朕的江山
+        chatEnabled: true
