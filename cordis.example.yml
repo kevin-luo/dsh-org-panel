@@ -1,0 +1,16 @@
+# 挂载示例：把「纯牛马」插件加入 composition
+#
+# 正式插件通过 cordis.yml 的 row 引用（name 为 npm 包名，本插件名 dsh-org-panel）。
+# 推荐放到「agent preset」—— 它是会话级 UI 贡献，每个会话挂载一次。
+#
+# 用法：
+#   1. 先构建并安装本包：pnpm build && pnpm install（或 link 到你的 DSH 项目）
+#   2. 在你的 agent preset 的 agent.cordis.yml 里加下面这一行：
+#
+#   - id: org-panel
+#     name: dsh-org-panel
+#
+# 一个完整的 agent preset composition 形如（其余行是你 preset 已有的内容）：
+
+- id: org-panel
+  name: dsh-org-panel
