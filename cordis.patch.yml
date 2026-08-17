@@ -3,6 +3,6 @@
     - id: org-panel
       name: dsh-org-panel
       config:
-        tabLabel: 纯牛马
-        companyName: 朕的江山
+        tabLabel: 赛博公司
+        companyName: 赛博公司
         chatEnabled: true

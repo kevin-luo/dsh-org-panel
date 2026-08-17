@@ -1,7 +1,7 @@
 {
   "name": "dsh-org-panel",
   "version": "1.1.0",
-  "description": "「纯牛马」—— DeepSeek Harness 多智能体数字员工指挥台插件：可视化真实 subagent/workflow 派活，提供可筛选员工工位与可交互群聊",
+  "description": "「赛博公司」—— DeepSeek Harness 多智能体数字员工工作台：真实独立员工、动态像素办公室、组织架构与可交互工作群",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
@@ -28,7 +28,8 @@
     "client": {
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
-        "@deepseek-ai/dsh-client-ui-conversation"
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-input-trigger"
       ],
       "platform": "web"
     }
