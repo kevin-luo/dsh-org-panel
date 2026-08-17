@@ -1,11 +1,11 @@
-# 「纯牛马」挂载示例（DeepSeek Harness / Cordis composition）
+# 「赛博公司」挂载示例（DeepSeek Harness / Cordis composition）
 # 把下面这行放进 agent preset 的 composition（其余行保留你已有的内容）：
 
 - id: org-panel
   name: dsh-org-panel
   config:
-    tabLabel: 纯牛马
-    companyName: 朕的江山
+    tabLabel: 赛博公司
+    companyName: 赛博公司
     chatEnabled: true
-    # roles 与 staff 可省略，省略时使用内置的 6 个默认岗位/员工。
+    # roles 与 staff 可省略，省略时使用内置的秘书与 7 名专业员工。
     # 如需扩展，请参考 README 的「扩展员工与岗位」。

@@ -1,117 +1,137 @@
-# 纯牛马 · 朕的江山（dsh-org-panel）
+# 赛博公司 · DSH 多智能体工作台
 
-> DeepSeek Harness plugin that turns real multi-agent dispatches into an interactive office board and group chat.  
-> 一个把真实多智能体派活，变成「可交互员工办公室 + 牛马群聊」的 DeepSeek Harness 插件。
+> 一个运行在 DeepSeek Harness 当前会话里的真实多智能体公司面板：左侧是员工通讯录，中间是公司工作群与思考/工具轨迹，右侧是办公室状态侧栏。
 
-**Topics / 标签：** `dsh-plugin` · `deepseek-harness` · `multi-agent` · `subagent` · `workflow` · `visualization`
+`dsh-org-panel` 是一个面向 DeepSeek Harness Web 会话的纯 Client 插件。它不创建第二个聊天输入框，也不使用静态剧本伪造任务；所有消息、派活、子代理回复、工具调用和交付状态都来自当前 DSH 会话。
 
----
+## 功能定位
 
-## 中文
+赛博公司的主工作区是聊天和执行记录，办公室是帮助老板理解状态的可视化侧栏：
 
-### 这是什么
+- 左侧员工通讯录：按部门、状态和关键词查找员工，单击定位，双击直接 `@` 员工。
+- 中间公司工作群：保留当前 Tab 内的对话、思考过程、工具轨迹、交付结果和错误信息。
+- 右侧办公室状态：显示真实员工在工位、会议室、茶水间、洗手间和放风区的可解释状态。
+- 顶部组织架构：展示老板、秘书、管理层、人才与文化、产品研发、市场与知识等组织归属。
+- 真实员工直连：明确 `@` 某位员工时，由对应独立子代理本人回复；秘书不会冒充员工。
+- 多人会议：明确要求多人讨论、评审或开会时，由 `staff_meeting` 让真实员工按顺序发言并形成共同结论。
+- 状态筛选与搜索：按干活中、已交付、卡住、待命筛选员工，搜索员工或任务。
+- 员工档案：查看岗位介绍、工具、技能、当前任务，并从档案发起点名沟通。
 
-「纯牛马」不是虚构剧本。它从当前会话里**真实发生的派活**（`subagent` / `subagent_fork` / 其他 `subagent*` / `workflow` 工具调用）中提炼：
+### 当前 Tab 的交互原则
 
-- 老板的派活指令；
-- 每个数字员工的干活进度；
-- 交付结果的结构化摘要；
-- 卡住、完成、待命等真实状态。
+页面只使用 DSH Harness 原生底部输入框。老板可以直接输入：
 
-然后用「员工办公室 + 工作群」的界面把它呈现出来，不生成任何演示任务。
+```text
+@老王 请检查这次发布的技术风险
+@小刘 修复登录接口并回复验收结果
+@阿明 @小周 讨论招聘需求，给我一个共同结论
+```
 
-### 功能亮点
+未点名的公司统筹消息由秘书处理；点名员工的消息走真实员工直连；点名多人并要求讨论时进入真实员工会议。界面只在当前 Tab 更新，不跳转到 DSH 的“对话”或“轨迹”标签页。
 
-- 在会话顶部新增标签页「**纯牛马**」。
-- **👑 老板派活气泡**：根据用户需求与真实派活调用，自动生成一句老板汇报。
-- **牛马办公室**：默认 6 名数字员工（老王、小刘、阿明、小丽、大壮、静静），状态徽章实时显示：干活中 / 已交付 / 卡住 / 待命中。
-- **任务卡**：真实派活挂到对应员工名下，展示任务指令、状态、开始时间、用时与交付摘要；交付摘要可展开/收起。
-- **💬 牛马摸鱼群（可交互）**：
-  - 真实派活、交付、卡住会变成群聊动态；
-  - 老板可以直接在群里发消息；
-  - 快捷指令：`进度`、`谁在待命`、`交付清单`；
-  - 员工会根据当前真实任务状态回复，不会伪造任务。
-- **🔎 筛选与搜索**：按状态筛选员工，按员工名、任务内容、交付摘要搜索。
-- **👤 员工档案**：点击员工查看人设、当前工位、能力（工具 + 技能），可只看 TA 的工位，也可一键复制派活指令后粘贴到主对话发起真实派活。
-- **🧩 可配置扩展**：员工与岗位可通过 composition 配置覆盖，不写死。
+## DSH 插件规范
 
-### 安装（推荐：插件市场 / npm）
+本项目按 DeepSeek Harness 的纯 Client 插件约定组织：
 
-- 在 DSH 插件市场搜索 `dsh-org-panel` 或 `纯牛马`，一键安装。
-- 或使用命令行：
+| 位置 | 作用 |
+| --- | --- |
+| `package.json` 的 `dsh.client` | 声明 Web Client 平台和运行时注入：`@deepseek-ai/dsh-client-runtime`、`@deepseek-ai/dsh-client-ui-conversation`、`@deepseek-ai/dsh-client-ui-input-trigger` |
+| `package.json` 的 `dsh.bundle.patch` | 声明作为 profile bundle 安装时要合入的默认 composition |
+| `cordis.patch.yml` | 默认插入 `dsh-org-panel` composition row |
+| `cordis.example.yml` | 手动挂载到 agent preset 的示例 |
+| `src/index.ts` | Host 侧注册真实员工路由工具和秘书调度规则 |
+| `src/client.tsx` | Client 入口，转出 `client-v2.tsx` 的 `apply` |
+| `src/client-v2.tsx` | `conversation.view` 的赛博公司工作台实现 |
+
+插件标签页通过以下方式注册：
+
+```ts
+slots.inject('conversation.view', () => slots.register({
+  name: 'conversation.view',
+  id: 'realm',
+  order: 20,
+  label: () => normalized.tabLabel,
+}))
+```
+
+Host 侧需要的注入服务为：
+
+```ts
+export const inject = ['tools', 'subagents', 'systemPrompt']
+```
+
+其中：
+
+- `staff_chat`：复用或启动对应员工的独立子代理会话。
+- `staff_meeting`：依次启动 2 至 3 名员工，传递前序发言并形成会议结论。
+- `systemPrompt`：注入秘书调度规则，让秘书只负责未点名统筹。
+
+## 安装与挂载
+
+### 插件市场或 npm
+
+在 DSH 插件市场搜索 `dsh-org-panel` 或“赛博公司”，或者在插件项目中安装：
 
 ```bash
 pnpm add dsh-org-panel
 ```
 
-安装后刷新/重启 DSH，会话顶部会出现「纯牛马」标签页；**不需要运行任何本地脚本**。
+安装后刷新或重启 DSH，在当前会话顶部即可看到“赛博公司”标签页。
 
-本地源码构建仅用于二次开发：
+### agent preset composition
 
-```bash
-pnpm install
-pnpm build          # 产出 lib/index.js 与 lib/client.js
-pnpm typecheck      # TypeScript 检查
-```
-
-### 挂载
-
-把插件挂载到你的 **agent preset** composition（示例见 `cordis.example.yml`）：
+把下面的 composition row 放进 agent preset，完整示例见 [`cordis.example.yml`](./cordis.example.yml)：
 
 ```yaml
 - id: org-panel
   name: dsh-org-panel
   config:
-    tabLabel: 纯牛马
-    companyName: 朕的江山
+    tabLabel: 赛博公司
+    companyName: 赛博公司
     chatEnabled: true
 ```
 
-重启 DSH 后，会话顶部会出现「纯牛马」标签页。
+作为 profile bundle 安装时，`package.json` 必须包含 `dsh.bundle`，并且 `cordis.patch.yml` 必须被打进 npm 包的 `files`。如果出现：
 
-> 本插件是会话级 UI 贡献，推荐放在 agent preset。
+```text
+profile bundle "dsh-org-panel" declares no dsh.bundle in its package.json
+```
 
-### 使用与交互
+请检查安装到 DSH 的实际包版本，而不是只检查本地源码；确认 `package.json` 有 `dsh.bundle.patch`，重新构建并重新安装包后再重启 DSH。
 
-1. 在对话里正常发起 `subagent` / `workflow` 派活。
-2. 打开「纯牛马」标签页：
-   - 员工卡片会根据真实任务自动进入「干活中 / 已交付 / 卡住 / 待命中」。
-   - 顶部老板气泡自动汇总当前派活。
-   - 右侧群聊同步真实动态。
-3. 在群聊输入框直接发消息：
-   - 输入 `进度`：返回当前任务统计。
-   - 输入 `谁在待命`：返回待命与忙碌员工名单。
-   - 输入 `交付清单`：返回已完成交付列表。
-   - @员工名（如 `小刘`）：该员工会按自己的真实状态回复。
-4. 用顶部筛选按钮只看某类状态；用搜索框快速定位员工或任务。
-5. 点击员工卡查看档案；可点「只看 TA 的工位」聚焦，或点「复制派活指令」后粘贴到主对话发起真实派活。
+## 本地开发
 
-### 数据来源
+```bash
+pnpm install
+pnpm typecheck
+pnpm build
+```
 
-插件通过 `useSession` 读取会话快照：
+构建产物：
 
-- `nodes` 中的 `tool-call` / `tool-result` → 提炼 `subagent*` 与 `workflow` 派活；
-- `description` / `prompt` / `task` → 任务指令；
-- `tool-result` → 交付内容、错误与完成时间；
-- 有调用、暂无结果 → 干活中；
-- `runningCalls` → 当前正在执行的派活。
+- Host：`lib/index.js`
+- Client：`lib/client.js`
+- 类型声明：`lib/*.d.ts`
 
-所有任务状态都来自真实会话数据；群聊里的员工回复只基于这些真实状态生成。
+本地源码只用于二次开发；DSH 运行时应加载构建后的 `lib` 目录。Windows 环境下如果已有 `node_modules`，请沿用当前 pnpm store，避免更换 store 导致 `ERR_PNPM_UNEXPECTED_STORE`。
 
-### 扩展员工与岗位
+## 配置员工与岗位
 
-在 composition 配置中传入自定义 `roles` 与 `staff` 即可，无需改源码：
+不改源码也可以通过 composition 覆盖 `roles` 和 `staff`：
 
 ```yaml
 - id: org-panel
   name: dsh-org-panel
   config:
+    tabLabel: 赛博公司
+    companyName: 赛博公司
+    chatEnabled: true
     roles:
       - id: designer
         tools: [read_image]
         skills:
           - name: 视觉设计
-            desc: 出图、修图、搭视觉
+            desc: 出图、修图、搭建视觉方案
         keywords: [设计, 视觉, 图片, 海报]
     staff:
       - id: designer
@@ -119,208 +139,75 @@ pnpm typecheck      # TypeScript 检查
         role: 设计师
         emoji: 🎨
         roleId: designer
+        department: 产品研发部
+        reportsTo: 老王
         aliases: [小美, 设计师]
-        intro: 审美在线，出图快。
+        intro: 负责把需求变成可交付的视觉方案。
         lines:
-          idle: [等一个设计需求]
-          running: [图在出了，别急]
-          done: [设计稿交付]
-          wait: [还差素材]
+          idle: [等待设计需求]
+          running: [正在制作设计稿]
+          done: [设计稿已交付]
+          wait: [等待素材或验收]
 ```
-
-配置说明：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
-| `tabLabel` | `string` | 标签页名称，默认 `纯牛马` |
-| `companyName` | `string` | 公司名，默认 `朕的江山` |
-| `chatEnabled` | `boolean` | 是否启用群聊交互，默认 `true` |
-| `roles` | `RoleDef[]` | 岗位能力映射：`id`、`tools`、`skills`、`keywords` |
-| `staff` | `StaffDef[]` | 员工定义：`id`、`name`、`role`、`emoji`、`roleId`、`aliases`、`intro`、`lines` |
+| `tabLabel` | `string` | Tab 名称，默认 `赛博公司` |
+| `companyName` | `string` | 公司名称，默认 `赛博公司` |
+| `chatEnabled` | `boolean` | 是否启用工作群快捷指令，默认 `true` |
+| `roles` | `RoleDef[]` | 岗位能力映射：工具、技能和关键词 |
+| `staff` | `StaffDef[]` | 员工身份、部门、汇报关系、别名和状态文案 |
 
-### 插件规范
+## 会话数据来源
 
-- `package.json` 通过 `dsh.client` 声明纯 client 插件及运行时依赖：
-  - `@deepseek-ai/dsh-client-runtime`
-  - `@deepseek-ai/dsh-client-ui-conversation`
-- host 入口：`lib/index.js`；client 入口：`lib/client.js`。
-- 通过 Cordis composition row 挂载：`{ id, name, config }`。
-- 标签页注册：`conversation.view` slot，id 为 `realm`。
+Client 侧通过 `useSession` 读取当前 DSH 会话快照：
 
-### 目录结构
+- `tool-call` / `tool-result`：识别 `subagent*` 和 `workflow` 派活。
+- `description` / `prompt` / `task`：提炼任务指令。
+- `tool-result`：显示交付文本、错误和完成时间。
+- 没有结果的调用：显示为执行中。
+- `runningCalls`：显示实时工具调用。
+- 用户消息、员工子代理消息和思考块：按原始顺序合并到中间工作群。
 
-```
+办公室的移动只根据员工岗位、任务状态和固定行动路线计算；它是状态解释层，不会生成或替代真实任务。
+
+## 默认组织
+
+默认配置包含秘书和 7 名专业员工：
+
+| 部门 | 员工 |
+| --- | --- |
+| 总裁办 | 秘书 |
+| 管理层 | 老王 · 技术经理 |
+| 人才与文化 | 小周 · 招聘负责人 |
+| 产品研发部 | 小刘 · 程序员、阿明 · 产品经理、大壮 · 平台工程师 |
+| 市场与知识部 | 小丽 · 市场调研、静静 · 文档专员 |
+
+主 Agent 在界面中显示为“秘书”，但不会代替专业员工回答明确点名的消息。
+
+## 目录结构
+
+```text
 dsh-org-panel/
-├── package.json          # DSH 插件声明（dsh.client）与发布元数据
-├── tsconfig.json
-├── cordis.example.yml    # composition 挂载与配置示例
-├── .gitignore
-└── src/
-    ├── index.ts          # host 半边（纯 client 插件的空宿主模块）
-    ├── client.tsx        # client 入口
-    └── client-v2.tsx     # 可交互主实现
+├── package.json          # dsh.client、dsh.bundle 与发布元数据
+├── cordis.example.yml    # agent preset 挂载示例
+├── cordis.patch.yml      # profile bundle 默认 composition patch
+├── src/index.ts          # Host 侧真实员工路由与秘书规则
+├── src/client.tsx        # Client 入口
+├── src/client-v2.tsx     # 三栏工作台与办公室状态侧栏
+└── .ui-craft/            # 项目级界面设计记忆与 token
 ```
 
-### License
+## License
 
 MIT
 
 ---
 
-## English
+## English summary
 
-### What it is
+`dsh-org-panel` is a pure client DeepSeek Harness plugin for a real multi-agent company workspace. The layout keeps the employee directory on the left, the conversation/thinking/tool trace in the center, and a compact office status sidebar on the right.
 
-"Pure Niuma" is not a scripted story. It extracts **real dispatches** from the current session (`subagent`, `subagent_fork`, other `subagent*` tools, and `workflow` calls) and turns them into:
+The plugin uses the native Harness composer in the current conversation tab. Unmentioned requests are handled by the secretary. Explicit employee mentions are routed to the corresponding independent subagent, while explicit multi-person discussions use the `staff_meeting` tool. The office view visualizes real task states and explainable routines; it does not fabricate work.
 
-- the boss's dispatch summary;
-- each digital employee's live progress;
-- structured delivery summaries;
-- real states such as running, delivered, blocked, and idle.
-
-All of this is presented as a "staff office + work group" board, with no demo or fabricated tasks.
-
-### Highlights
-
-- Adds a **Pure Niuma** tab to the conversation view.
-- **👑 Boss bubble** generated from real user requests and dispatch calls.
-- **Office board** with 6 default digital employees; each card shows a live status badge: Running / Delivered / Blocked / Idle.
-- **Task cards** attached to the responsible employee, with instruction, status, start time, duration, and an expandable delivery summary.
-- **💬 Interactive group chat**:
-  - Real dispatches, deliveries, and errors appear as chat activity.
-  - You can type messages as the boss.
-  - Quick commands: `进度` (progress), `谁在待命` (who is idle), `交付清单` (delivery list).
-  - Employees reply based on their actual current task state; the plugin never fabricates tasks.
-- **🔎 Filter and search**: filter employees by status and search by employee, task, or delivery text.
-- **👤 Employee profile**: click a card to view persona, current tasks, tools, and skills, focus on that employee's station, or copy a dispatch prompt and paste it into the main conversation to start real work.
-- **🧩 Configurable**: staff and roles can be overridden through composition config.
-
-### Installation (recommended: plugin market / npm)
-
-- Search `dsh-org-panel` or `纯牛马` in the DSH plugin market and install it in one click.
-- Or use the command line:
-
-```bash
-pnpm add dsh-org-panel
-```
-
-After refreshing/restarting DSH, the **Pure Niuma** tab will appear in the conversation view. **No local script is required.**
-
-Building from source is only needed for secondary development:
-
-```bash
-pnpm install
-pnpm build          # emits lib/index.js and lib/client.js
-pnpm typecheck      # TypeScript check
-```
-
-### Mounting
-
-Add the plugin to your **agent preset** composition (see `cordis.example.yml`):
-
-```yaml
-- id: org-panel
-  name: dsh-org-panel
-  config:
-    tabLabel: 纯牛马
-    companyName: 朕的江山
-    chatEnabled: true
-```
-
-Restart DSH and the **Pure Niuma** tab will appear.
-
-> This is a conversation-level UI contribution, so mounting it in an agent preset is recommended.
-
-### Usage and interaction
-
-1. Start real `subagent` / `workflow` dispatches in the conversation as usual.
-2. Open the **Pure Niuma** tab:
-   - Employee cards switch to Running / Delivered / Blocked / Idle based on real tasks.
-   - The boss bubble summarizes active dispatches.
-   - The group chat mirrors real activity.
-3. Type in the chat input:
-   - `进度`: current task statistics.
-   - `谁在待命`: idle and busy employees.
-   - `交付清单`: completed deliveries.
-   - Mention an employee by name (for example `小刘`): that employee replies according to their real state.
-4. Use the status filters and the search box to locate employees or tasks quickly.
-5. Click an employee card to open their profile; use **Focus on this station** to filter the board, or **Copy dispatch prompt** and paste it into the main conversation to start real work.
-
-### Data source
-
-The plugin reads the session snapshot through `useSession`:
-
-- `tool-call` / `tool-result` nodes → extracts `subagent*` and `workflow` dispatches;
-- `description` / `prompt` / `task` → task instruction;
-- `tool-result` → delivery text, error flag, and completion time;
-- call without result → running;
-- `runningCalls` → dispatches currently in flight.
-
-All task states come from real session data; chat replies are generated only from those real states.
-
-### Extending staff and roles
-
-Pass custom `roles` and `staff` through composition config — no source changes required:
-
-```yaml
-- id: org-panel
-  name: dsh-org-panel
-  config:
-    roles:
-      - id: designer
-        tools: [read_image]
-        skills:
-          - name: Visual design
-            desc: Generate, retouch, and compose visuals
-        keywords: [design, visual, image, poster]
-    staff:
-      - id: designer
-        name: Mei
-        role: Designer
-        emoji: 🎨
-        roleId: designer
-        aliases: [Mei, designer]
-        intro: Great taste, fast delivery.
-        lines:
-          idle: [Waiting for a design request]
-          running: [Working on it]
-          done: [Design delivered]
-          wait: [Waiting for assets]
-```
-
-Configuration reference:
-
-| Field | Type | Description |
-| --- | --- | --- |
-| `tabLabel` | `string` | Tab label, default `纯牛马` |
-| `companyName` | `string` | Company name, default `朕的江山` |
-| `chatEnabled` | `boolean` | Enable interactive chat, default `true` |
-| `roles` | `RoleDef[]` | Role capability map: `id`, `tools`, `skills`, `keywords` |
-| `staff` | `StaffDef[]` | Employee definitions: `id`, `name`, `role`, `emoji`, `roleId`, `aliases`, `intro`, `lines` |
-
-### Plugin specification
-
-- `package.json` declares a pure client plugin through `dsh.client` with runtime injections:
-  - `@deepseek-ai/dsh-client-runtime`
-  - `@deepseek-ai/dsh-client-ui-conversation`
-- Host entry: `lib/index.js`; client entry: `lib/client.js`.
-- Mounted through a Cordis composition row: `{ id, name, config }`.
-- Tab registration: `conversation.view` slot with id `realm`.
-
-### Directory structure
-
-```
-dsh-org-panel/
-├── package.json          # DSH plugin declaration (dsh.client) and metadata
-├── tsconfig.json
-├── cordis.example.yml    # composition mounting and config example
-├── .gitignore
-└── src/
-    ├── index.ts          # host side (empty host module for a pure client plugin)
-    ├── client.tsx        # client entry
-    └── client-v2.tsx     # interactive main implementation
-```
-
-### License
-
-MIT
+The package follows the DSH plugin contract through `dsh.client`, `dsh.bundle.patch`, `conversation.view`, and Cordis composition files. Run `pnpm typecheck` and `pnpm build` before packaging.
