@@ -3,7 +3,6 @@
 import { createElement } from 'react'
 import { EMPLOYEE_BLUEPRINTS, ROLE_BLUEPRINTS } from '../org-blueprints'
 import type { OrgPanelConfig, RoleDef, StaffDef } from './types'
-import { detectAssetBase, probeAssetBase, setAssetBase } from './asset-map'
 import { installStyles } from './styles'
 import { CompanyView } from './company-view'
 
@@ -62,10 +61,6 @@ export function apply(ctx: any, config?: OrgPanelConfig) {
   const inputTriggers = ctx && ctx.get ? ctx.get('inputTriggers') : undefined
   const normalized = normalizedConfig(config)
 
-  // 优先使用配置指定的资产根路径；否则同步推断，再用小图异步校验/试探其它候选路径。
-  if (config?.assetBase) setAssetBase(config.assetBase)
-  else detectAssetBase()
-  if (typeof window !== 'undefined') { void probeAssetBase() }
   installStyles()
 
   // 复用现有 @ trigger 机制，不重写 mention parser。

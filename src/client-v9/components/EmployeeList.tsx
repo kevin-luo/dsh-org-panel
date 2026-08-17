@@ -1,14 +1,18 @@
-// 「赛博公司」client-v9 左栏：员工列表。
-// 员工资料只来自 org-blueprints（经 config 注入），不维护第二份。
-import { createElement as h } from 'react'
+import { createElement as h, useMemo, useState } from 'react'
 import type { Delegation, LegacyStatus, StaffDef } from '../types'
 import { STATUS_LABEL } from '../types'
-import { staffPortrait } from '../asset-map'
+import { staffThumb } from '../asset-map'
 import { clip, lineOf } from '../selectors'
+import { AssetImage } from './AssetImage'
+
+type Filter = 'all' | LegacyStatus
+const FILTERS: Array<{ id: Filter; label: string }> = [
+  { id: 'all', label: '全部' }, { id: 'running', label: '工作中' },
+  { id: 'done', label: '已交付' }, { id: 'wait', label: '卡住' }, { id: 'idle', label: '待命' },
+]
 
 function currentTask(tasks: Delegation[] | undefined): Delegation | undefined {
-  if (!tasks || tasks.length === 0) return undefined
-  return tasks.find((t) => t.running) || tasks[tasks.length - 1]
+  return tasks?.find((task) => task.running) || tasks?.[tasks.length - 1]
 }
 
 export function EmployeeList(props: {
@@ -18,34 +22,46 @@ export function EmployeeList(props: {
   activeStaffId: string | null
   tick: number
   onSelect: (staffId: string) => void
+  onMention: (staff: StaffDef) => void
 }) {
-  const { staff, statuses, tasksMap, activeStaffId, tick, onSelect } = props
+  const { staff, statuses, tasksMap, activeStaffId, tick, onSelect, onMention } = props
+  const [filter, setFilter] = useState<Filter>('all')
+  const groups = useMemo(() => {
+    const map = new Map<string, StaffDef[]>()
+    for (const item of staff) {
+      const status = statuses[item.id] || 'idle'
+      if (filter !== 'all' && status !== filter) continue
+      const department = item.department || '其他部门'
+      map.set(department, [...(map.get(department) || []), item])
+    }
+    return [...map.entries()]
+  }, [staff, statuses, filter])
+
   return h('aside', { className: 'cy9-left' },
-    h('div', { className: 'cy9-left-head' },
-      h('b', null, `员工列表 (${staff.length})`),
-      h('span', null, '真实子代理'),
-    ),
+    h('div', { className: 'cy9-left-head' }, h('b', null, '员工通讯录'), h('span', null, `${staff.length} 位真实子代理`)),
+    h('div', { className: 'cy9-left-filters' }, FILTERS.map((item) => h('button', {
+      key: item.id, type: 'button', className: filter === item.id ? 'on' : '', onClick: () => setFilter(item.id),
+    }, item.label))),
     h('div', { className: 'cy9-left-list' },
-      staff.map((item) => {
-        const status = statuses[item.id] || 'idle'
-        const task = currentTask(tasksMap[item.id])
-        const taskLine = task ? clip(task.desc, 22) : lineOf(item, status, tick)
-        return h('button', {
-          key: item.id,
-          type: 'button',
-          className: `cy9-emp${activeStaffId === item.id ? ' active' : ''}`,
-          onClick: () => onSelect(item.id),
-          title: item.intro,
-        },
-          h('div', { className: 'cy9-emp-avatar' }, h('img', { src: staffPortrait(item.id), alt: item.name })),
-          h('div', { className: 'cy9-emp-line' },
-            h('span', { className: 'cy9-emp-name' }, item.name),
-            h('span', { className: 'cy9-emp-role' }, item.role),
-          ),
-          h('span', { className: `cy9-emp-state ${status}` }, h('i', null), STATUS_LABEL[status]),
-          h('div', { className: 'cy9-emp-task' }, taskLine),
-        )
-      }),
+      groups.map(([department, employees]) => h('section', { key: department, className: 'cy9-department' },
+        h('div', { className: 'cy9-department-title' }, department, h('span', null, employees.length)),
+        employees.map((item) => {
+          const status = statuses[item.id] || 'idle'
+          const task = currentTask(tasksMap[item.id])
+          const taskLine = task ? clip(task.desc, 20) : lineOf(item, status, tick)
+          return h('button', {
+            key: item.id, type: 'button',
+            className: `cy9-emp${activeStaffId === item.id ? ' active' : ''}`,
+            onClick: () => onSelect(item.id), onDoubleClick: () => onMention(item), title: '单击定位，双击直接 @ 本人',
+          },
+            h('div', { className: 'cy9-emp-avatar' }, h(AssetImage, { src: staffThumb(item.id), alt: item.name, fallback: item.name })),
+            h('div', { className: 'cy9-emp-copy' },
+              h('div', { className: 'cy9-emp-line' }, h('span', { className: 'cy9-emp-name' }, item.name), h('span', { className: 'cy9-emp-role' }, item.role)),
+              h('div', { className: 'cy9-emp-task' }, h('i', { className: status }), `${STATUS_LABEL[status]} · ${taskLine}`),
+            ),
+          )
+        }),
+      )),
     ),
   )
 }

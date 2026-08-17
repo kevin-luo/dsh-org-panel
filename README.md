@@ -1,50 +1,60 @@
 # 赛博公司 · DSH 多智能体工作台
 
-> 一个运行在 DeepSeek Harness 当前会话里的真实多智能体公司面板：左侧是员工通讯录，中间是公司工作群与思考/工具轨迹，右侧是办公室状态侧栏。
+> 在 DeepSeek Harness 当前会话中，把独立子代理、真实群聊、工具轨迹和可视化办公室合并成一个公司运营界面。
 
-`dsh-org-panel` 是一个面向 DeepSeek Harness Web 会话的纯 Client 插件。它不创建第二个聊天输入框，也不使用静态剧本伪造任务；所有消息、派活、子代理回复、工具调用和交付状态都来自当前 DSH 会话。
+![赛博公司 1920×1080](./docs/qa/cyber-company-v1.4-1920x1080.png)
 
-## 功能定位
+`dsh-org-panel` 是一个 DeepSeek Harness 插件。主 Agent 在界面中显示为“秘书”，明确 `@` 某位员工时，消息会直达该员工对应的独立子代理；多人讨论使用真实 `staff_meeting`，不会由秘书一人扮演全公司。
 
-赛博公司的主工作区是聊天和执行记录，办公室是帮助老板理解状态的可视化侧栏：
+## v1.4 工作台
 
-- 左侧员工通讯录：按部门、状态和关键词查找员工，单击定位，双击直接 `@` 员工。
-- 中间公司工作群：保留当前 Tab 内的对话、思考过程、工具轨迹、交付结果和错误信息。
-- 右侧办公室状态：显示真实员工在工位、会议室、茶水间、洗手间和放风区的可解释状态；v3 视觉层把侧栏装修成暗色赛博像素办公室（霓虹灯带、窗外城市夜景、吊灯、海报、白板、服务器机柜、扫地机器人等氛围细节）。
-- 顶部组织架构：展示老板、秘书、管理层、人才与文化、产品研发、市场与知识等组织归属。
-- 真实员工直连：明确 `@` 某位员工时，由对应独立子代理本人回复；秘书不会冒充员工。
-- 多人会议：明确要求多人讨论、评审或开会时，由 `staff_meeting` 让真实员工按顺序发言并形成共同结论。
-- 状态筛选与搜索：按干活中、已交付、卡住、待命筛选员工，搜索员工或任务。
-- 员工档案：查看岗位介绍、工具、技能、当前任务，并从档案发起点名沟通。
+- **员工通讯录**：按部门分组，支持状态筛选；单击员工会联动办公室和聊天，双击直接插入 `@员工`。
+- **赛博公司总部**：单张 1200×720 WebP 场景承载完整空间，员工以独立 sprite 覆盖其上；工作、会议、卡住、交付和休息都有可解释状态。
+- **公司工作群**：频道、老板消息、秘书回复、员工本人回复、多人会议、工具事件与安全执行摘要都来自当前 DSH 会话。
+- **独立输入框**：当前 Tab 使用自己的群聊输入框，通过 DSH 官方 `InputActions.setDraft()` + `submit()` 发送；进入本 Tab 时仅隐藏原生 composer，卸载时恢复，因此不会出现两个输入框。
+- **经营侧栏**：只展示真实在线数、任务、成长、技能与插件市场结果；成长/技能/插件使用单卡 Tab，不堆叠三块长面板。
+- **响应式布局**：桌面保留三栏；窄屏把员工通讯录和经营侧栏变成抽屉，办公室保持固定世界坐标并允许平移，不把 1200×720 强行缩成小图。
 
-### 当前 Tab 的交互原则
-
-页面只使用 DSH Harness 原生底部输入框。老板可以直接输入：
+## 真实交互
 
 ```text
-@老王 请检查这次发布的技术风险
+@老王 请检查本次发布的技术风险
 @小刘 修复登录接口并回复验收结果
-@阿明 @小周 讨论招聘需求，给我一个共同结论
+@阿明 @小周 围绕招聘需求开会，给出共同结论
 ```
 
-未点名的公司统筹消息由秘书处理；点名员工的消息走真实员工直连；点名多人并要求讨论时进入真实员工会议。界面只在当前 Tab 更新，不跳转到 DSH 的“对话”或“轨迹”标签页。
+- 未点名的统筹请求由秘书处理。
+- 单独点名由对应员工本人回复。
+- 多人讨论由 `staff_meeting` 让员工依次发言并形成结论。
+- 页面只展示可公开的执行摘要和真实工具事件，不展示私有思维链。
 
 ## DSH 插件规范
 
-本项目按 DeepSeek Harness 的纯 Client 插件约定组织：
+项目使用 DSH 的标准插件声明：
 
 | 位置 | 作用 |
 | --- | --- |
-| `package.json` 的 `dsh.client` | 声明 Web Client 平台和运行时注入：`@deepseek-ai/dsh-client-runtime`、`@deepseek-ai/dsh-client-ui-conversation`、`@deepseek-ai/dsh-client-ui-input-trigger` |
-| `package.json` 的 `dsh.bundle.patch` | 声明作为 profile bundle 安装时要合入的默认 composition |
+| `package.json > dsh.bundle.patch` | profile bundle 的 Cordis composition 补丁 |
+| `package.json > dsh.client` | Web Client 平台和所需注入服务 |
 | `cordis.patch.yml` | 默认插入 `dsh-org-panel` composition row |
 | `cordis.example.yml` | 手动挂载到 agent preset 的示例 |
-| `src/index.ts` | Host 侧注册真实员工路由工具和秘书调度规则 |
-| `src/client.tsx` | Client 入口，转出 `client-v3.tsx` 的 `apply` |
-| `src/client-v2.tsx` | `conversation.view` 的赛博公司工作台实现（真实会话/员工路由逻辑与办公室 DOM 结构） |
-| `src/client-v3.tsx` | 办公室视觉层：保留 v2 逻辑，用 CSS 覆盖把办公室装修成暗色赛博像素风 |
+| `src/index.ts` | Host 侧 `staff_chat`、`staff_meeting` 与秘书调度规则 |
+| `src/client-v9/index.tsx` | 注册 `conversation.view` 的“赛博公司”Tab 与 `@` 候选源 |
 
-插件标签页通过以下方式注册：
+Client 注入：
+
+```json
+{
+  "inject": [
+    "@deepseek-ai/dsh-client-runtime",
+    "@deepseek-ai/dsh-client-ui-conversation",
+    "@deepseek-ai/dsh-client-ui-input-trigger"
+  ],
+  "platform": "web"
+}
+```
+
+Tab 注册方式：
 
 ```ts
 slots.inject('conversation.view', () => slots.register({
@@ -55,168 +65,104 @@ slots.inject('conversation.view', () => slots.register({
 }))
 ```
 
-Host 侧需要的注入服务为：
+如果启动时报错：
 
-```ts
-export const inject = ['tools', 'subagents', 'systemPrompt']
+```text
+profile bundle "dsh-org-panel" declares no dsh.bundle in its package.json
 ```
 
-其中：
+请确认 DSH 实际加载的安装包版本包含 `package.json` 中的 `dsh.bundle.patch`，并且 `cordis.patch.yml` 在 npm 包的 `files` 中；重新构建、安装并重启 DSH。只修改本地源码但不重建不会生效。
 
-- `staff_chat`：复用或启动对应员工的独立子代理会话。
-- `staff_meeting`：依次启动 2 至 3 名员工，传递前序发言并形成会议结论。
-- `systemPrompt`：注入秘书调度规则，让秘书只负责未点名统筹。
+## 运行时资产管线
 
-## 安装与挂载
+DSH 通过 `fetch + eval` 加载插件 Client，并不会稳定暴露 npm 包中的静态资源目录。v1.4 不再猜测 `/plugins/.../assets` 路径：
 
-### 插件市场或 npm
+1. 高清原稿保存在 `design-assets/`，不会进入 npm 运行包。
+2. `scripts/build-runtime-assets.mjs` 使用 `sharp` 生成 `src/runtime-assets/`：
+   - 员工头像 `thumb.webp`：96×96
+   - 办公室员工 `sprite.webp`：128×128
+   - 员工档案 `profile.webp`：384×384
+   - 办公室底图 `office-hq-base.webp`：1200×720
+3. 构建脚本生成 `src/client-v9/generated-assets.ts`，以压缩 WebP data URL 作为稳定 fallback。
+4. `AssetImage` 处理 loading / loaded / failed；单个资源失败时显示姓名缩写，不出现浏览器破图图标。
 
-在 DSH 插件市场搜索 `dsh-org-panel` 或“赛博公司”，或者在插件项目中安装：
+发布体积门禁：
+
+- `lib/client.js` 必须小于 **3.5 MiB**。
+- `npm pack` 必须小于 **4.5 MiB**。
+- `npm run size-check` 本地和 CI 都会执行，超标直接失败。
+
+当前 v1.4 验证值：`client.js 1.29 MiB`，`npm pack 0.94 MiB`。
+
+## 安装与配置
 
 ```bash
-pnpm add dsh-org-panel
+npm install dsh-org-panel
 ```
 
-安装后刷新或重启 DSH，在当前会话顶部即可看到“赛博公司”标签页。
-
-### agent preset composition
-
-把下面的 composition row 放进 agent preset，完整示例见 [`cordis.example.yml`](./cordis.example.yml)：
+Composition 示例：
 
 ```yaml
 - id: org-panel
   name: dsh-org-panel
   config:
     tabLabel: 赛博公司
-    companyName: 赛博公司
+    companyName: 赛博公司 · AI 员工总部
     chatEnabled: true
 ```
 
-作为 profile bundle 安装时，`package.json` 必须包含 `dsh.bundle`，并且 `cordis.patch.yml` 必须被打进 npm 包的 `files`。如果出现：
-
-```text
-profile bundle "dsh-org-panel" declares no dsh.bundle in its package.json
-```
-
-请检查安装到 DSH 的实际包版本，而不是只检查本地源码；确认 `package.json` 有 `dsh.bundle.patch`，重新构建并重新安装包后再重启 DSH。
+`roles` 与 `staff` 仍可在 composition 中覆盖，用于自定义岗位、工具、技能、部门、汇报关系、别名和状态文案。
 
 ## 本地开发
 
 ```bash
-pnpm install
-pnpm typecheck
-pnpm build
+npm ci
+npm run typecheck
+npm run build
+npm run size-check
+npm pack --dry-run
 ```
 
 构建产物：
 
 - Host：`lib/index.js`
 - Client：`lib/client.js`
-- 类型声明：`lib/*.d.ts`
+- 类型：`lib/index.d.ts`、`lib/client.d.ts`
 
-本地源码只用于二次开发；DSH 运行时应加载构建后的 `lib` 目录。Windows 环境下如果已有 `node_modules`，请沿用当前 pnpm store，避免更换 store 导致 `ERR_PNPM_UNEXPECTED_STORE`。
-
-## 配置员工与岗位
-
-不改源码也可以通过 composition 覆盖 `roles` 和 `staff`：
-
-```yaml
-- id: org-panel
-  name: dsh-org-panel
-  config:
-    tabLabel: 赛博公司
-    companyName: 赛博公司
-    chatEnabled: true
-    roles:
-      - id: designer
-        tools: [read_image]
-        skills:
-          - name: 视觉设计
-            desc: 出图、修图、搭建视觉方案
-        keywords: [设计, 视觉, 图片, 海报]
-    staff:
-      - id: designer
-        name: 小美
-        role: 设计师
-        emoji: 🎨
-        roleId: designer
-        department: 产品研发部
-        reportsTo: 老王
-        aliases: [小美, 设计师]
-        intro: 负责把需求变成可交付的视觉方案。
-        lines:
-          idle: [等待设计需求]
-          running: [正在制作设计稿]
-          done: [设计稿已交付]
-          wait: [等待素材或验收]
-```
-
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `tabLabel` | `string` | Tab 名称，默认 `赛博公司` |
-| `companyName` | `string` | 公司名称，默认 `赛博公司` |
-| `chatEnabled` | `boolean` | 是否启用工作群快捷指令，默认 `true` |
-| `roles` | `RoleDef[]` | 岗位能力映射：工具、技能和关键词 |
-| `staff` | `StaffDef[]` | 员工身份、部门、汇报关系、别名和状态文案 |
-
-## 会话数据来源
-
-Client 侧通过 `useSession` 读取当前 DSH 会话快照：
-
-- `tool-call` / `tool-result`：识别 `subagent*` 和 `workflow` 派活。
-- `description` / `prompt` / `task`：提炼任务指令。
-- `tool-result`：显示交付文本、错误和完成时间。
-- 没有结果的调用：显示为执行中。
-- `runningCalls`：显示实时工具调用。
-- 用户消息、员工子代理消息和思考块：按原始顺序合并到中间工作群。
-
-办公室的移动只根据员工岗位、任务状态和固定行动路线计算；它是状态解释层，不会生成或替代真实任务。
-
-### 办公室视觉分层（v3）
-
-办公室侧栏采用「逻辑与视觉分离」的两层结构：
-
-- `src/client-v2.tsx` 负责办公室的 DOM 结构与状态逻辑：房间分区、家具、员工精灵移动都基于真实任务状态计算；静态装饰元素（吊灯、海报、白板、机柜、地毯、扫地机器人、霓虹灯带等）只承担氛围，不参与任何状态判断。
-- `src/client-v3.tsx` 是纯视觉覆盖层：不改变任何逻辑，通过注入 CSS 把办公室装修成暗色赛博像素风（霓虹、窗外城市夜景、指示灯闪烁、扫地机器人巡逻等），并在窄屏与 `prefers-reduced-motion` 下自动收起装饰与动画。
-
-## 默认组织
-
-默认配置包含秘书和 7 名专业员工：
-
-| 部门 | 员工 |
-| --- | --- |
-| 总裁办 | 秘书 |
-| 管理层 | 老王 · 技术经理 |
-| 人才与文化 | 小周 · 招聘负责人 |
-| 产品研发部 | 小刘 · 程序员、阿明 · 产品经理、大壮 · 平台工程师 |
-| 市场与知识部 | 小丽 · 市场调研、静静 · 文档专员 |
-
-主 Agent 在界面中显示为“秘书”，但不会代替专业员工回答明确点名的消息。
+修改后需要重启 DSH，浏览器刷新才能加载新的 Client bundle。
 
 ## 目录结构
 
 ```text
 dsh-org-panel/
-├── package.json          # dsh.client、dsh.bundle 与发布元数据
-├── cordis.example.yml    # agent preset 挂载示例
-├── cordis.patch.yml      # profile bundle 默认 composition patch
-├── src/index.ts          # Host 侧真实员工路由与秘书规则
-├── src/client.tsx        # Client 入口（转出 v3）
-├── src/client-v2.tsx     # 三栏工作台、办公室 DOM 结构与状态逻辑
-├── src/client-v3.tsx     # 办公室视觉层：暗色赛博像素装修
-└── .ui-craft/            # 项目级界面设计记忆与 token
+├── design-assets/                 # 高清设计源，不进入 npm 包
+├── docs/qa/                       # 1920 / 1440 / 1280 实机验收图
+├── scripts/
+│   ├── build-runtime-assets.mjs   # sharp WebP 与内联资产生成
+│   └── check-size.mjs             # Client / npm 包体积门禁
+├── src/runtime-assets/            # WebP 运行时资产
+├── src/client-v9/
+│   ├── components/                # Header / Roster / Office / Chat / Rail
+│   ├── generated-assets.ts        # 构建生成的 data URL fallback
+│   ├── company-view.tsx           # 当前 Tab 工作台
+│   ├── messages.ts                # 真实会话消息映射
+│   └── selectors.ts               # 真实任务、员工、频道与办公室状态
+├── cordis.patch.yml
+├── cordis.example.yml
+└── package.json
 ```
+
+## 验收截图
+
+- [1920×1080](./docs/qa/cyber-company-v1.4-1920x1080.png)
+- [1440×900](./docs/qa/cyber-company-v1.4-1440x900.png)
+- [1280×800](./docs/qa/cyber-company-v1.4-1280x800.png)
+- [设计参考与最终实现对比](./docs/qa/reference-vs-v1.4.png)
 
 ## License
 
 MIT
 
----
-
 ## English summary
 
-`dsh-org-panel` is a pure client DeepSeek Harness plugin for a real multi-agent company workspace. The layout keeps the employee directory on the left, the conversation/thinking/tool trace in the center, and a compact office status sidebar on the right.
-
-The plugin uses the native Harness composer in the current conversation tab. Unmentioned requests are handled by the secretary. Explicit employee mentions are routed to the corresponding independent subagent, while explicit multi-person discussions use the `staff_meeting` tool. The office view visualizes real task states and explainable routines; it does not fabricate work.
-
-The package follows the DSH plugin contract through `dsh.client`, `dsh.bundle.patch`, `conversation.view`, and Cordis composition files. Run `pnpm typecheck` and `pnpm build` before packaging.
+`dsh-org-panel` is a DeepSeek Harness plugin that combines an independent-agent roster, a real session-backed company chat, safe tool traces, a single illustrated cyber office, and real operational metrics in the current conversation tab. Runtime images are optimized to WebP and embedded into the client bundle so the UI does not depend on guessed static asset URLs.

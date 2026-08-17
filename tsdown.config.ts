@@ -16,7 +16,7 @@ export default defineConfig([
     format: 'cjs',
     platform: 'browser',
     dts: false,
-    sourcemap: true,
+    sourcemap: false,
     clean: false,
     external: ['react'],
     outputOptions: {

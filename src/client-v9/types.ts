@@ -24,7 +24,7 @@ export type OrgPanelConfig = {
   tabLabel?: string
   companyName?: string
   chatEnabled?: boolean
-  /** 强制指定资产根路径（如 https://example.com/plugins/dsh-org-panel/lib/），留空则运行时自动探测。 */
+  /** @deprecated v1.4 起运行时资产已内联，保留该字段只为兼容旧配置。 */
   assetBase?: string
   roles?: RoleDef[]
   staff?: StaffDef[]

@@ -35,6 +35,21 @@ export function extractMentions(text: string, staff: StaffDef[]): string[] {
   return hits
 }
 
+function cleanBossMessage(text: string): string {
+  const normalized = text
+    .replaceAll('\u7eaf\u725b\u9a6c', '赛博公司')
+    .replaceAll('\u6715\u7684\u6c5f\u5c71', '赛博公司')
+  return normalized.match(/老板消息：([\s\S]*)$/)?.[1]?.trim() || normalized
+}
+
+function cleanPublicReply(text: string): string {
+  return text
+    .replaceAll('\u7eaf\u725b\u9a6c', '赛博公司')
+    .replaceAll('\u6715\u7684\u6c5f\u5c71', '赛博公司')
+    .replace(/^(?:The user|The boss|This is|I am|I should)[\s\S]*?\n(?=[\u3400-\u9fff])/i, '')
+    .trim()
+}
+
 /** 把会话节点流映射为公司群聊消息（老板/员工本人/秘书/工具卡/会议/系统事件）。 */
 export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMessage[] {
   const out: CompanyMessage[] = []
@@ -61,7 +76,7 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
           continue
         }
       }
-      const text = extractText(node.content) || '（非文本消息）'
+      const text = cleanBossMessage(extractText(node.content) || '（非文本消息）')
       out.push({
         id: nextId('boss', node), channelId: '', node,
         sender: { type: 'boss' },
@@ -97,7 +112,7 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
           out.push({
             id: nextId('staff', node), channelId: '', node,
             sender: { type: 'employee', staffId: employee.id },
-            content: material.text, mentions: extractMentions(material.text, staff),
+            content: cleanPublicReply(material.text), mentions: extractMentions(material.text, staff),
             kind: 'message', createdAt: time,
             reasoning: material.reasoning || undefined,
           })
@@ -145,7 +160,7 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
             out.push({
               id: nextId('direct', node), channelId: '', node,
               sender: { type: 'employee', staffId: employee.id },
-              content: reply, mentions: extractMentions(reply, staff),
+              content: cleanPublicReply(reply), mentions: extractMentions(reply, staff),
               kind: 'message', createdAt: time,
             })
           }
