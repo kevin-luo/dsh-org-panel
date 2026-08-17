@@ -276,6 +276,32 @@ const MODERN_CSS = `
 .dsh-org-office-plant { position: absolute; z-index: 2; width: 20px; height: 20px; border: 3px solid #694345; background: #a76445; }
 .dsh-org-office-plant::before { content: '♣'; position: absolute; left: -4px; top: -24px; color: #4f8c62; font-size: 27px; }
 .dsh-org-office-plant.p1 { left: 20%; top: 40%; } .dsh-org-office-plant.p2 { right: 27%; bottom: 5%; }
+/* —— 装修层：静态装饰（基础像素外观；v3 视觉层在其上做赛博化覆盖）—— */
+.dsh-org-neon-strip, .dsh-org-lamp, .dsh-org-poster, .dsh-org-whiteboard, .dsh-org-rack, .dsh-org-fridge, .dsh-org-rug, .dsh-org-bot, .dsh-org-neon-open, .dsh-org-floor-lamp, .dsh-org-filing { position: absolute; z-index: 2; }
+.dsh-org-neon-strip { left: 2%; top: 1.2%; width: 96%; height: 1.4%; background: #d64d78; box-shadow: 0 0 8px rgba(214, 77, 120, .5); }
+.dsh-org-lamp { width: 5%; height: 3.6%; border: 3px solid #694345; background: #f4e0a8; }
+.dsh-org-lamp::after { content: ''; position: absolute; left: -14%; right: -14%; top: 78%; height: 5px; background: rgba(255, 241, 199, .55); filter: blur(1px); }
+.dsh-org-lamp.c1 { left: 14%; top: .8%; } .dsh-org-lamp.c2 { left: 47%; top: .8%; } .dsh-org-lamp.c3 { right: 12%; top: .8%; }
+.dsh-org-poster { border: 3px solid #694345; background: #302738; }
+.dsh-org-poster::before { content: ''; position: absolute; inset: 22% 18%; background: linear-gradient(135deg, #b83e62 0 34%, transparent 34%), linear-gradient(45deg, #6fc5da 0 40%, transparent 40%); opacity: .85; }
+.dsh-org-poster.pst1 { left: 73.5%; top: 6%; width: 8%; height: 9%; }
+.dsh-org-poster.pst2 { left: 6%; top: 20%; width: 10%; height: 7%; }
+.dsh-org-whiteboard { right: 4%; top: 20.5%; width: 18%; height: 6%; border: 3px solid #694345; background: #fff1c7; }
+.dsh-org-whiteboard::before { content: ''; position: absolute; left: 8%; top: 18%; width: 62%; height: 3px; background: #b83e62; box-shadow: 0 7px 0 #3f7653, 0 14px 0 #2a7088; opacity: .8; }
+.dsh-org-rack { left: 66%; top: 32%; width: 4.5%; height: 15%; border: 3px solid #694345; background: #29354a; }
+.dsh-org-rack::before { content: ''; position: absolute; left: 16%; right: 16%; top: 12%; height: 4px; background: #2a7088; box-shadow: 0 9px 0 #3f7653, 0 18px 0 #2a7088, 0 27px 0 #6c9c83; opacity: .9; }
+.dsh-org-fridge { right: 3.5%; bottom: 20%; width: 6%; height: 10%; border: 3px solid #694345; background: #7aa6b5; }
+.dsh-org-fridge::after { content: ''; position: absolute; left: 10%; right: 10%; top: 48%; height: 3px; background: rgba(255, 255, 255, .5); }
+.dsh-org-rug { right: 12%; bottom: 6%; width: 12%; height: 4%; border: 3px solid #694345; background: #6c9c83; }
+.dsh-org-bot { left: 28%; top: 90%; width: 3.4%; height: 3.2%; border: 2px solid #49343c; background: #6fc5da; animation: dsh-org-bot-patrol 11s steps(1, end) infinite; }
+@keyframes dsh-org-bot-patrol { 0%, 100% { left: 28%; top: 90%; } 30% { left: 64%; top: 90%; } 50% { left: 64%; top: 93.5%; } 80% { left: 28%; top: 93.5%; } }
+.dsh-org-neon-open { left: 7%; top: 36%; width: 10%; height: 4.6%; border: 2px solid #d64d78; background: #302738; color: #ffe5a2; font: 800 7px ui-monospace, Consolas, monospace; line-height: 1; display: grid; place-items: center; }
+.dsh-org-floor-lamp { left: 3%; top: 55%; width: 3%; height: 10%; border: 3px solid #694345; background: #a76445; }
+.dsh-org-floor-lamp::before { content: ''; position: absolute; left: 50%; top: -4px; width: 10px; height: 6px; border: 3px solid #694345; background: #f4e0a8; transform: translateX(-50%); }
+.dsh-org-filing { left: 18.5%; top: 47%; width: 3.5%; height: 9%; border: 3px solid #694345; background: #8b6c78; }
+.dsh-org-filing::before, .dsh-org-filing::after { content: ''; position: absolute; left: 8%; right: 8%; height: 2px; background: rgba(255, 255, 255, .45); }
+.dsh-org-filing::before { top: 34%; } .dsh-org-filing::after { top: 66%; }
+.dsh-org-office-plant.p3 { left: 17%; top: 30%; } .dsh-org-office-plant.p4 { right: 4.5%; top: 29%; }
 .dsh-org-avatar { --avatar-x: 50cqw; --avatar-y: 70cqh; --avatar-skin: #f4c38e; --avatar-hair: #5d496d; --avatar-shirt: #856f9e; --avatar-pants: #414454; --avatar-accent: #f4ce5a; position: absolute; z-index: 5; left: 0; top: 0; display: grid; justify-items: center; width: 64px; min-height: 78px; padding: 0; border: 0; background: transparent; color: #3d2d3a; cursor: pointer; transform: translate(var(--avatar-x), var(--avatar-y)) translate(-50%, -50%); transition: filter var(--org-motion-fast) var(--org-ease-out), transform var(--org-motion-walk) var(--org-ease-walk); will-change: transform; }
 .dsh-org-avatar:hover, .dsh-org-avatar.active { filter: brightness(1.08) drop-shadow(0 4px 0 rgba(78, 47, 54, .4)); }
 .dsh-org-avatar-shadow { position: absolute; bottom: 15px; width: 36px; height: 8px; border-radius: 50%; background: rgba(91, 55, 55, .25); }
@@ -1051,6 +1077,23 @@ function PixelOffice(props: {
       createElement('div', { className: 'dsh-org-furniture smoke', 'aria-hidden': true }),
       createElement('div', { className: 'dsh-org-office-plant p1', 'aria-hidden': true }),
       createElement('div', { className: 'dsh-org-office-plant p2', 'aria-hidden': true }),
+      // —— 装修层：静态装饰与氛围元素（不参与状态逻辑，外观由 v3 视觉层赛博化）——
+      createElement('div', { className: 'dsh-org-neon-strip', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-lamp c1', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-lamp c2', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-lamp c3', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-poster pst1', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-poster pst2', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-whiteboard', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-rack', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-fridge', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-rug', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-bot', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-neon-open', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-floor-lamp', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-filing', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-office-plant p3', 'aria-hidden': true }),
+      createElement('div', { className: 'dsh-org-office-plant p4', 'aria-hidden': true }),
       officeStaff.map((item, index) => {
         const status = statuses[item.id] || 'idle'
         const tasks = tasksMap[item.id] || []

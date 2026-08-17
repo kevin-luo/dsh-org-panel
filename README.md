@@ -10,7 +10,7 @@
 
 - 左侧员工通讯录：按部门、状态和关键词查找员工，单击定位，双击直接 `@` 员工。
 - 中间公司工作群：保留当前 Tab 内的对话、思考过程、工具轨迹、交付结果和错误信息。
-- 右侧办公室状态：显示真实员工在工位、会议室、茶水间、洗手间和放风区的可解释状态。
+- 右侧办公室状态：显示真实员工在工位、会议室、茶水间、洗手间和放风区的可解释状态；v3 视觉层把侧栏装修成暗色赛博像素办公室（霓虹灯带、窗外城市夜景、吊灯、海报、白板、服务器机柜、扫地机器人等氛围细节）。
 - 顶部组织架构：展示老板、秘书、管理层、人才与文化、产品研发、市场与知识等组织归属。
 - 真实员工直连：明确 `@` 某位员工时，由对应独立子代理本人回复；秘书不会冒充员工。
 - 多人会议：明确要求多人讨论、评审或开会时，由 `staff_meeting` 让真实员工按顺序发言并形成共同结论。
@@ -40,8 +40,9 @@
 | `cordis.patch.yml` | 默认插入 `dsh-org-panel` composition row |
 | `cordis.example.yml` | 手动挂载到 agent preset 的示例 |
 | `src/index.ts` | Host 侧注册真实员工路由工具和秘书调度规则 |
-| `src/client.tsx` | Client 入口，转出 `client-v2.tsx` 的 `apply` |
-| `src/client-v2.tsx` | `conversation.view` 的赛博公司工作台实现 |
+| `src/client.tsx` | Client 入口，转出 `client-v3.tsx` 的 `apply` |
+| `src/client-v2.tsx` | `conversation.view` 的赛博公司工作台实现（真实会话/员工路由逻辑与办公室 DOM 结构） |
+| `src/client-v3.tsx` | 办公室视觉层：保留 v2 逻辑，用 CSS 覆盖把办公室装修成暗色赛博像素风 |
 
 插件标签页通过以下方式注册：
 
@@ -171,6 +172,13 @@ Client 侧通过 `useSession` 读取当前 DSH 会话快照：
 
 办公室的移动只根据员工岗位、任务状态和固定行动路线计算；它是状态解释层，不会生成或替代真实任务。
 
+### 办公室视觉分层（v3）
+
+办公室侧栏采用「逻辑与视觉分离」的两层结构：
+
+- `src/client-v2.tsx` 负责办公室的 DOM 结构与状态逻辑：房间分区、家具、员工精灵移动都基于真实任务状态计算；静态装饰元素（吊灯、海报、白板、机柜、地毯、扫地机器人、霓虹灯带等）只承担氛围，不参与任何状态判断。
+- `src/client-v3.tsx` 是纯视觉覆盖层：不改变任何逻辑，通过注入 CSS 把办公室装修成暗色赛博像素风（霓虹、窗外城市夜景、指示灯闪烁、扫地机器人巡逻等），并在窄屏与 `prefers-reduced-motion` 下自动收起装饰与动画。
+
 ## 默认组织
 
 默认配置包含秘书和 7 名专业员工：
@@ -193,8 +201,9 @@ dsh-org-panel/
 ├── cordis.example.yml    # agent preset 挂载示例
 ├── cordis.patch.yml      # profile bundle 默认 composition patch
 ├── src/index.ts          # Host 侧真实员工路由与秘书规则
-├── src/client.tsx        # Client 入口
-├── src/client-v2.tsx     # 三栏工作台与办公室状态侧栏
+├── src/client.tsx        # Client 入口（转出 v3）
+├── src/client-v2.tsx     # 三栏工作台、办公室 DOM 结构与状态逻辑
+├── src/client-v3.tsx     # 办公室视觉层：暗色赛博像素装修
 └── .ui-craft/            # 项目级界面设计记忆与 token
 ```
 

@@ -140,10 +140,14 @@ const CYBER_OFFICE_V3_CSS = `
   height: 14%;
   border: 2px solid #3e5364;
   background:
-    radial-gradient(circle at 22% 34%, #ffd76a 0 2px, transparent 3px),
-    radial-gradient(circle at 68% 20%, #ef5b91 0 2px, transparent 3px),
-    radial-gradient(circle at 76% 72%, #6ee7f5 0 2px, transparent 3px),
-    linear-gradient(180deg, #172335, #0a1017);
+    radial-gradient(circle at 20% 20%, #ffd76a 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 70% 14%, #6ee7f5 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 82% 40%, #ef5b91 0 1.5px, transparent 2.5px),
+    radial-gradient(circle at 12% 55%, #6ee7f5 0 1px, transparent 2px),
+    radial-gradient(circle at 55% 8%, #ffd76a 0 1px, transparent 2px),
+    repeating-linear-gradient(90deg, #101f2e 0 12px, #0a151f 12px 16px, #101f2e 16px 26px, #0a151f 26px 32px),
+    linear-gradient(180deg, transparent 0 58%, #070d13 58% 100%),
+    linear-gradient(180deg, #1a2b3d, #0a1017);
   box-shadow: inset 0 0 18px rgba(110,231,245,.12), 3px 3px 0 rgba(0,0,0,.38);
 }
 .dsh-org.dsh-org .dsh-org-office-window::before { border-left: 2px solid #3e5364; }
@@ -351,6 +355,201 @@ const CYBER_OFFICE_V3_CSS = `
   text-shadow: 0 0 9px rgba(115,226,167,.12);
 }
 
+/* —— v3 装修层：装饰元素的赛博化外观与氛围动画 —— */
+.dsh-org.dsh-org .dsh-org-neon-strip {
+  height: 1.4%;
+  border: 0;
+  background: linear-gradient(90deg, transparent, var(--office-pink) 12%, var(--office-cyan) 50%, var(--office-pink) 88%, transparent);
+  box-shadow: 0 0 10px rgba(239,91,145,.55), 0 0 22px rgba(110,231,245,.18);
+  animation: dsh-org-v3-neon 4s steps(2, end) infinite;
+}
+@keyframes dsh-org-v3-neon { 50% { opacity: .55; } }
+
+.dsh-org.dsh-org .dsh-org-lamp {
+  border: 1px solid #3b4f5f;
+  background: linear-gradient(180deg, #26323e, #101821);
+  box-shadow: 3px 3px 0 rgba(0,0,0,.3);
+}
+.dsh-org.dsh-org .dsh-org-lamp::before {
+  content: '';
+  position: absolute;
+  left: -30%; right: -30%; top: 96%;
+  height: 26px;
+  background: radial-gradient(ellipse at center, rgba(255, 215, 106, .3), transparent 70%);
+  filter: blur(2px);
+  pointer-events: none;
+}
+.dsh-org.dsh-org .dsh-org-lamp::after {
+  left: -18%; right: -18%; top: 84%;
+  height: 4px;
+  background: var(--office-amber);
+  box-shadow: 0 0 8px rgba(255, 215, 106, .8);
+  filter: none;
+}
+
+.dsh-org.dsh-org .dsh-org-poster {
+  border: 1px solid #44314e;
+  background: linear-gradient(160deg, rgba(239,91,145,.14), transparent 55%), #101722;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.3), 0 0 8px rgba(239,91,145,.22);
+}
+.dsh-org.dsh-org .dsh-org-poster::before {
+  inset: 18% 14%;
+  background:
+    linear-gradient(120deg, transparent 0 34%, var(--office-cyan) 34% 44%, transparent 44%),
+    linear-gradient(60deg, transparent 0 30%, var(--office-pink) 30% 40%, transparent 40%),
+    linear-gradient(180deg, transparent 0 60%, rgba(255,215,106,.5) 60% 66%, transparent 66%);
+  opacity: .9;
+  box-shadow: inset 0 0 0 1px rgba(110,231,245,.2);
+}
+.dsh-org.dsh-org .dsh-org-poster.pst2::before {
+  background:
+    linear-gradient(120deg, transparent 0 40%, var(--office-green) 40% 48%, transparent 48%),
+    linear-gradient(60deg, transparent 0 26%, #a982ff 26% 36%, transparent 36%),
+    linear-gradient(180deg, transparent 0 62%, rgba(110,231,245,.45) 62% 68%, transparent 68%);
+}
+
+.dsh-org.dsh-org .dsh-org-whiteboard {
+  border: 1px solid #3b4f5f;
+  background: #0d141c;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.3);
+}
+.dsh-org.dsh-org .dsh-org-whiteboard::before {
+  left: 7%; top: 16%;
+  height: 3px;
+  background: var(--office-pink);
+  box-shadow: 0 8px 0 var(--office-cyan), 0 16px 0 var(--office-amber), 0 24px 0 rgba(110,231,245,.35);
+  opacity: .95;
+}
+
+.dsh-org.dsh-org .dsh-org-rack {
+  border: 1px solid #2f4352;
+  background: linear-gradient(180deg, #141d26, #0c1218);
+  box-shadow: 2px 2px 0 rgba(0,0,0,.3), inset 0 0 8px rgba(110,231,245,.05);
+}
+.dsh-org.dsh-org .dsh-org-rack::before {
+  left: 12%; right: 12%; top: 10%;
+  height: 3px;
+  background: var(--office-green);
+  box-shadow: 0 9px 0 var(--office-cyan), 0 18px 0 var(--office-green), 0 27px 0 rgba(255,122,122,.85);
+  animation: dsh-org-v3-blink 2.2s steps(2, end) infinite;
+}
+.dsh-org.dsh-org .dsh-org-rack::after {
+  content: '';
+  position: absolute;
+  left: 20%; right: 20%; bottom: 8%;
+  height: 3px;
+  background: #33465a;
+  box-shadow: 0 0 6px rgba(110,231,245,.3);
+}
+@keyframes dsh-org-v3-blink { 50% { opacity: .45; } }
+
+.dsh-org.dsh-org .dsh-org-fridge {
+  border: 1px solid #2c4150;
+  background: linear-gradient(180deg, #15222d, #0d161e);
+  box-shadow: 2px 2px 0 rgba(0,0,0,.3);
+}
+.dsh-org.dsh-org .dsh-org-fridge::before {
+  content: '';
+  position: absolute;
+  left: 12%; right: 12%; top: 12%;
+  height: 2px;
+  background: rgba(110,231,245,.4);
+  box-shadow: 0 5px 0 rgba(110,231,245,.4);
+}
+.dsh-org.dsh-org .dsh-org-fridge::after {
+  left: 8%; right: 8%; top: 50%;
+  height: 3px;
+  background: rgba(255,255,255,.08);
+  border-top: 1px solid rgba(255,255,255,.1);
+}
+
+.dsh-org.dsh-org .dsh-org-rug {
+  border: 1px solid #2c4150;
+  background:
+    linear-gradient(90deg, rgba(110,231,245,.14) 0 20%, transparent 20% 80%, rgba(239,91,145,.14) 80%),
+    repeating-linear-gradient(90deg, rgba(255,255,255,.03) 0 6px, transparent 6px 12px),
+    #121b24;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.28);
+}
+
+.dsh-org.dsh-org .dsh-org-bot {
+  width: 3.6%; height: 3.4%;
+  border: 1px solid #3b5a68;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 40%, #2c4a58, #12202a 70%);
+  box-shadow: 0 0 10px rgba(110,231,245,.28), inset 0 -3px 0 rgba(110,231,245,.35);
+  animation: dsh-org-v3-bot 13s steps(1, end) infinite;
+}
+.dsh-org.dsh-org .dsh-org-bot::before {
+  content: '';
+  position: absolute;
+  left: 50%; top: 22%;
+  width: 4px; height: 4px;
+  transform: translateX(-50%);
+  border-radius: 50%;
+  background: var(--office-cyan);
+  box-shadow: 0 0 6px var(--office-cyan);
+  animation: dsh-org-v3-blink 1.6s steps(2, end) infinite;
+}
+.dsh-org.dsh-org .dsh-org-bot::after {
+  content: '';
+  position: absolute;
+  left: -40%; right: -40%; bottom: -5px;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, rgba(110,231,245,.35), transparent);
+}
+@keyframes dsh-org-v3-bot {
+  0%, 100% { left: 30%; top: 89.5%; }
+  28% { left: 63%; top: 89.5%; }
+  50% { left: 63%; top: 93.8%; }
+  78% { left: 30%; top: 93.8%; }
+}
+
+.dsh-org.dsh-org .dsh-org-neon-open {
+  border: 1px solid var(--office-pink);
+  background: rgba(20, 12, 22, .82);
+  color: #ffd7e6;
+  font-size: 7px;
+  letter-spacing: .12em;
+  text-shadow: 0 0 6px rgba(239,91,145,.9);
+  box-shadow: 0 0 10px rgba(239,91,145,.35), inset 0 0 8px rgba(239,91,145,.18);
+  animation: dsh-org-v3-neon-open 3.6s steps(2, end) infinite;
+}
+@keyframes dsh-org-v3-neon-open { 0%, 100% { opacity: 1; } 92% { opacity: .35; } }
+
+.dsh-org.dsh-org .dsh-org-floor-lamp {
+  border: 1px solid #33485a;
+  background: #17222c;
+  box-shadow: 2px 2px 0 rgba(0,0,0,.25);
+}
+.dsh-org.dsh-org .dsh-org-floor-lamp::before {
+  border: 1px solid #3b4f5f;
+  background: var(--office-amber);
+  box-shadow: 0 0 10px rgba(255,215,106,.55);
+}
+.dsh-org.dsh-org .dsh-org-floor-lamp::after {
+  content: '';
+  position: absolute;
+  left: -60%; right: -60%; bottom: 0;
+  height: 14px;
+  background: radial-gradient(ellipse at center, rgba(255,215,106,.2), transparent 70%);
+}
+
+.dsh-org.dsh-org .dsh-org-filing {
+  border: 1px solid #3a4d5c;
+  background: linear-gradient(180deg, #1a2530, #101821);
+  box-shadow: 2px 2px 0 rgba(0,0,0,.25);
+}
+.dsh-org.dsh-org .dsh-org-filing::before,
+.dsh-org.dsh-org .dsh-org-filing::after {
+  left: 10%; right: 10%;
+  height: 2px;
+  background: rgba(255,255,255,.07);
+}
+
+.dsh-org.dsh-org .dsh-org-office-plant.p3 { left: 16.5%; top: 30.5%; }
+.dsh-org.dsh-org .dsh-org-office-plant.p4 { right: 4%; top: 29.5%; }
+
 /* Employees stay as crisp pixel sprites, but read like distinct people rather than DOM boxes. */
 .dsh-org.dsh-org .dsh-org-avatar {
   display: grid !important;
@@ -474,7 +673,18 @@ const CYBER_OFFICE_V3_CSS = `
   .dsh-org.dsh-org .dsh-org-office-label,
   .dsh-org.dsh-org .dsh-org-furniture,
   .dsh-org.dsh-org .dsh-org-office-plant,
-  .dsh-org.dsh-org .dsh-org-avatar { display: none !important; }
+  .dsh-org.dsh-org .dsh-org-avatar,
+  .dsh-org.dsh-org .dsh-org-neon-strip,
+  .dsh-org.dsh-org .dsh-org-lamp,
+  .dsh-org.dsh-org .dsh-org-poster,
+  .dsh-org.dsh-org .dsh-org-whiteboard,
+  .dsh-org.dsh-org .dsh-org-rack,
+  .dsh-org.dsh-org .dsh-org-fridge,
+  .dsh-org.dsh-org .dsh-org-rug,
+  .dsh-org.dsh-org .dsh-org-bot,
+  .dsh-org.dsh-org .dsh-org-neon-open,
+  .dsh-org.dsh-org .dsh-org-floor-lamp,
+  .dsh-org.dsh-org .dsh-org-filing { display: none !important; }
   .dsh-org.dsh-org .dsh-org-office-compact {
     display: grid !important;
     background: #0e141c;
@@ -492,7 +702,12 @@ const CYBER_OFFICE_V3_CSS = `
 
 @media (prefers-reduced-motion: reduce) {
   .dsh-org.dsh-org .dsh-org-furniture.desk::before,
-  .dsh-org.dsh-org .dsh-org-avatar.status-wait::after { animation: none !important; }
+  .dsh-org.dsh-org .dsh-org-avatar.status-wait::after,
+  .dsh-org.dsh-org .dsh-org-bot,
+  .dsh-org.dsh-org .dsh-org-neon-strip,
+  .dsh-org.dsh-org .dsh-org-neon-open,
+  .dsh-org.dsh-org .dsh-org-rack::before,
+  .dsh-org.dsh-org .dsh-org-bot::before { animation: none !important; }
 }
 `
 
