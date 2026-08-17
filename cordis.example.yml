@@ -7,5 +7,8 @@
     tabLabel: 赛博公司
     companyName: 赛博公司
     chatEnabled: true
+    # 可选：强制指定办公室/员工图片的资产根路径（需以 / 结尾，其下应有 assets/ 目录）。
+    # 默认会根据 client.js 的加载 URL 自动探测；若图片不显示可手动指定，例如：
+    # assetBase: http://127.0.0.1:8080/plugins/dsh-org-panel/lib/
     # roles 与 staff 可省略，省略时使用内置的秘书与 7 名专业员工。
     # 如需扩展，请参考 README 的「扩展员工与岗位」。

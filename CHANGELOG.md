@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.0
+
+中文：
+
+- UI 架构重构：全新组件化 `client-v9`，彻底告别 client-v2~v8 的 CSS wrapper 套娃；布局对齐设计稿（顶栏经营指标 / 左员工列表 / 中央赛博办公室 / 底部公司群聊 / 右经营面板）。
+- 办公室改为真实美术资产：1200×720 固定逻辑尺寸，10 个部门区域全部由 PNG 地板、家具、招牌、玻璃墙、城市窗景拼接，员工以 sprite 小人呈现，仅保留 100/90/80 三档缩放，不再有 SVG/CAD 感。
+- 公司群聊回归：频道列表 + 真实消息流（老板指令、员工本人回复、多人会议记录、工具执行卡、可展开工作思路），支持 @员工自动补全，内容全部来自真实 SubAgent 执行结果，无假聊天。
+- 员工状态与办公室联动：working/thinking/meeting/blocked/done 对应名字颜色、气泡、会议室移动与徽标动画。
+- 右侧经营面板全部消费真实会话数据：公司状态、当前任务流、员工成长动态、技能学习队列、DSH 插件市场精选（安装需老板批准），无数据时展示空态，不写死任何 KPI。
+- Host 入口切换至 `host-v3`，社区插件市场（staff_plugin_market_search）真正生效；build 同步复制美术资产到 lib/assets。
+- 修复资产路径解析：DSH 客户端 bundle 经 `__ModuleLoader__` fetch + eval 加载、页面无 `<script src>`，导致全部办公室/员工图片 404；现改为多策略探测（script 标签 / performance 资源记录 / ModuleLoader 注册表）+ 小图运行时校验，并支持 `config.assetBase` 手动指定资产根路径。
+
+English:
+
+- UI architecture rewrite: brand-new componentized `client-v9` replaces the client-v2~v8 CSS wrapper chain; layout follows the design mock (header KPIs / staff list / cyber office / company group chat / right rail).
+- The office is now built from real art assets: a fixed 1200×720 world with 10 department zones composed from PNG floors, furniture, signs, glass walls and city windows; only 100/90/80 zoom steps, no SVG/CAD look.
+- Company group chat is back: channels plus a real message feed (boss orders, direct employee replies, meeting transcripts, tool-call cards, expandable work notes) with @-mention autocomplete — every message comes from real SubAgent execution, no fake chats.
+- Employee states drive the office: working/thinking/meeting/blocked/done map to name colors, bubbles, meeting-room movement and badges.
+- The right rail consumes real session data only: company status, live task flow, growth feed, skill queue and DSH plugin market picks (install requires boss approval); empty states instead of fake KPIs.
+- Host entry switched to `host-v3` so the community plugin market is actually loaded; build now copies art assets into lib/assets.
+- Fixed asset base resolution: the DSH client bundle loads via `__ModuleLoader__` fetch + eval (no `<script src>` in the page), which 404'd every office/portrait image; the base is now resolved by multi-strategy detection (script tags / performance resource entries / ModuleLoader registry) plus a runtime image probe, with `config.assetBase` available as a manual override.
+
 ## 1.2.0
 
 中文：

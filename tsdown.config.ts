@@ -2,7 +2,7 @@ import { defineConfig } from 'tsdown'
 
 export default defineConfig([
   {
-    entry: { index: 'src/host-v3.ts' },
+    entry: { index: 'src/index.ts' },
     outDir: 'lib',
     format: 'esm',
     platform: 'node',

@@ -1,4 +1,4 @@
 // 「赛博公司」host 入口
-// v2：真实独立员工 + 持久记忆 + 技能进化 + 插件能力发现。
+// v3：在 v2 真实员工体系之上接入自我进化与真实 DSH 社区插件市场。
 
-export { inject, apply } from './host-v2'
+export { inject, apply } from './host-v3'
