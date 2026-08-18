@@ -436,7 +436,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
 
   // 持续会话（continuable child）没有前台 result 可 await。这里只认宿主 handle 上真实存在的
   // 结束信号；一个都没有时把这一轮挂起，等下一次真实观察点再如实结单，绝不猜一个 success。
-  type PendingTurn = { employeeId: string; taskId: string; startedAt: number }
+  type PendingTurn = { employeeId: string; taskId: string; startedAt: number; message: string }
   const pendingTurns = new Map<string, PendingTurn>()
 
   const settleThenable = (handle: any): Promise<any> | null => {
@@ -447,11 +447,11 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
     return null
   }
 
-  const trackContinuable = (childId: string, employeeId: string, taskId: string | null, handle: any): void => {
+  const trackContinuable = (childId: string, employeeId: string, taskId: string | null, handle: any, message: string): void => {
     if (!taskId) return
     const settle = settleThenable(handle)
     if (!settle) {
-      pendingTurns.set(childId, { employeeId, taskId, startedAt: Date.now() })
+      pendingTurns.set(childId, { employeeId, taskId, startedAt: Date.now(), message })
       return
     }
     void settle.then(
@@ -472,6 +472,21 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
     if (!pending) return
     pendingTurns.delete(childId)
     await closeTask(pending.taskId, pending.employeeId, { outcome: 'partial', summary: '子代理已接受下一轮任务，本轮宿主没有拿到结束信号，成败未知。' })
+  }
+
+  /**
+   * 同一条老板消息被重复派给同一位员工时，复用上一轮那条履历。
+   *
+   * 真机实录（glm-5.2）：子代理异常中断后，秘书在同一个老板 turn 里把**一模一样**的原话
+   * 又整轮重发了一次。旧代码在每次调用里都 settlePending + openTask，于是一条老板消息
+   * 落成两条履历 —— 前一条被硬判成 partial，后一条永远挂着结不掉。
+   * 判定只认宿主观测得到的事实：同一个持续会话、同一位员工、同一条原话，且上一轮仍挂在
+   * pendingTurns 上（连一个结束信号都没有）。这不是新的一轮工作，不许假装上一轮结束了，
+   * 更不许再开一单；但消息本身照常投递，重发这件事真实发生过，绝不吞掉。
+   */
+  const repeatOf = (childId: string, employeeId: string, message: string): PendingTurn | undefined => {
+    const pending = pendingTurns.get(childId)
+    return pending && pending.employeeId === employeeId && pending.message === message ? pending : undefined
   }
 
   const resolveChild = async (parentId: string, employee: Employee, signal?: AbortSignal): Promise<string | undefined> => {
@@ -697,14 +712,18 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
 
       let childId = await resolveChild(parentId, employee, signal)
       if (childId) {
-        // 同一个持续会话接受新一轮任务 ⇒ 上一轮已经结束，先如实结掉上一轮的履历再开新单。
-        await settlePending(childId)
-        const taskId = await openTask(employee, { title: message, description: message, source: 'web' })
+        const repeat = repeatOf(childId, employee.id, message)
+        // 同一个持续会话接受**新**一轮任务 ⇒ 上一轮已经结束，先如实结掉上一轮的履历再开新单。
+        // 重发的是同一条原话就走幂等：沿用上一轮那条履历，一条老板消息始终只有一条履历。
+        if (repeat) ctx?.logger?.info?.(`dsh-org-panel: ${employee.id} 收到重复派活，沿用履历 ${repeat.taskId}，不再开新单`)
+        else await settlePending(childId)
+        const taskId = repeat ? repeat.taskId : await openTask(employee, { title: message, description: message, source: 'web' })
         let handle: any
         try {
           handle = await subagents.followup(parent, childId, [{ type: 'text', text: enrichedMessage }], { source, signal })
         } catch (error) {
           // 派不出去就没有这次工作，履历不能永远挂在「进行中」。
+          pendingTurns.delete(childId)
           await closeTask(taskId, employee.id, { outcome: 'failed', summary: `派活失败：${describeError(error)}` })
           throw error
         }
@@ -713,7 +732,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
           employeeId: employee.id, query: message, memoryIds: memoryDigest.memoryIds, reflectionIds: memoryDigest.reflectionIds,
           taskId: taskId || undefined, childId,
         })
-        trackContinuable(childId, employee.id, taskId, handle)
+        trackContinuable(childId, employee.id, taskId, handle, message)
         return { kind: 'continuable', staffId: employee.id, staffName: employee.name, subagentId: String(childId), reply: '' }
       }
 
@@ -740,7 +759,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
           taskId: taskId || undefined, childId,
         })
         childCache.set(`${parentId}:${employee.id}`, childId)
-        trackContinuable(childId, employee.id, taskId, started)
+        trackContinuable(childId, employee.id, taskId, started, message)
         return { kind: 'continuable', staffId: employee.id, staffName: employee.name, subagentId: childId, reply: '' }
       }
 

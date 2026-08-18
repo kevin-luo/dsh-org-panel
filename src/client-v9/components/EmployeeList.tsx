@@ -106,6 +106,19 @@ export function EmployeeList(props: {
               h('div', { className: 'cy9-emp-line' }, h('span', { className: 'cy9-emp-name' }, item.name), h('span', { className: 'cy9-emp-role' }, item.role)),
               h('div', { className: 'cy9-emp-task' }, h('i', { className: status }), `${STATUS_LABEL[status]} · ${taskLine}`),
             ),
+            // 单击 @ 的明牌入口。原来只有「双击」这一条路，还只写在 title 里 ——
+            // 老板照着最自然的单击点下去只会选中，看上去就像 @ 功能整个是死的。
+            // 外层是 <button>，这里只能用 role=button 的 span（button 套 button 是非法 HTML）。
+            h('span', {
+              className: 'cy9-emp-at', role: 'button', tabIndex: 0,
+              title: `把 @${item.name} 写进下方输入框（不会替你发送）`,
+              onClick: (event: any) => { event.stopPropagation(); onMention(item) },
+              onDoubleClick: (event: any) => { event.stopPropagation() },
+              onKeyDown: (event: any) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return
+                event.preventDefault(); event.stopPropagation(); onMention(item)
+              },
+            }, '@'),
           )
         }),
       )),

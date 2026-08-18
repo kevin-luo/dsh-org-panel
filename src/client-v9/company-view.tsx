@@ -11,6 +11,7 @@ import { RightRail } from './components/RightRail'
 import { EmployeeProfile } from './employee-profile/EmployeeProfile'
 import { CompanySettings, settingsDataFromSnapshot } from './settings/CompanySettings'
 import { buildSettingsActions, REFRESH_PROMPT, REFRESH_RESULT, SOURCE_LABEL, useOrgPanel, useSessionEventChannel } from './company-bridge'
+import { composerTextarea, joinDraft, scheduleFocus, writeDraft } from './composer'
 import type { OrgPanelRpc } from './rpc'
 
 export function CompanyView(props: any) {
@@ -75,15 +76,22 @@ export function CompanyView(props: any) {
   // 全局唯一的「插入 @员工」出口：只写 DSH 官方草稿（InputActions.setDraft），再把焦点交还原生 Composer。
   // 绝不调用 submit —— 发不发、怎么改，由老板在原生输入框里决定。
   // focus=false 用于弹窗还开着的场景：把焦点移到弹窗背后的 textarea 会让老板以为界面卡了。
+  //
+  // 三条真机才暴露的坑，全在这里堵死（细节见 composer.ts 顶部注释）：
+  //   ① 直接 setDraft(text) 是**覆盖**：老板已经敲进去的字会被抹掉；
+  //      而且新旧文本一样时 machine 直接 return，点第二次画面上毫无反应。现在改成并进现有草稿。
+  //   ② 官方 face 万一缺席 / 抛错，原来什么都不做也什么都不说；现在退到原生 input 事件那条路。
+  //   ③ 焦点原来只挂一个 requestAnimationFrame —— 页面在后台标签页时 rAF 不触发，焦点永远不过去。
   const draftComposer = (text: string, focus = true) => {
     setChatCollapsed(false)
-    const actions: any = inputActions
-    if (actions && typeof actions.setDraft === 'function') {
-      try { actions.setDraft(text) } catch { /* 草稿写入失败时也照样聚焦，让老板自己补内容 */ }
+    // 当前草稿从原生 textarea 只读取一次（不订阅 useInput：那会让整块面板跟着每个按键重渲染）。
+    const next = joinDraft(composerTextarea()?.value || '', text)
+    const route = writeDraft(inputActions, next)
+    if (route === 'none' && typeof console !== 'undefined') {
+      console.warn('[dsh-org-panel] 草稿没写进去：宿主既没给 inputActions.setDraft，也没找到 [data-composer-seat] textarea')
     }
     if (!focus) return
-    // 只读定位原生 Composer 的 textarea（seat 是赛博公司 Tab 的同级兄弟节点），不做任何 DOM 搬运。
-    window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')?.focus())
+    scheduleFocus()
   }
   const toggleStaff = (staffId: string) => setActiveStaffId((current) => current === staffId ? null : staffId)
   const profileStaff = profileId ? staff.find((item) => item.id === profileId) || null : null

@@ -1,11 +1,12 @@
 import { createElement as h, useMemo, useSyncExternalStore } from 'react'
 import type { Delegation, LegacyStatus, OfficePlacement, StaffDef } from '../types'
-import { OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
+import { EMPLOYEE_STATUS_LABEL, OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
 import { officeBase } from '../asset-map'
 import { OFFICE_ZONES, OFFICE_ZOOM_LEVELS, RECEPTION_DESK } from '../office-layout'
 import type { CompanyPresence, PresenceFallback } from '../selectors'
 import { companyPresence, officePlacement, officePlacementFromRuntime, runtimeToEmployeeStatus } from '../selectors'
 import type { CompanyRuntime, EmployeeRuntimeState } from '../../runtime/company-events'
+import { EMPLOYEE_RUNTIME_LABEL } from '../../runtime/company-events'
 import { companyEventBus } from '../../runtime/event-bus'
 import { EmployeeSprite } from './EmployeeSprite'
 
@@ -119,6 +120,15 @@ export function OfficeWorld(props: {
 
   const notices = runtime?.reception.notices || []
   const base = officeBase()
+  // 选中的人 + 他此刻的一句实话。文案口径与小人身上完全一致，不另起一套说法。
+  const activeStaff = activeStaffId ? staff.find((item) => item.id === activeStaffId) || null : null
+  const activeEntry = activeStaff ? placements[activeStaff.id] : undefined
+  const activeState = activeEntry?.state
+  const activeStaffLine = activeStaff
+    ? (activeState && activeState.status !== 'idle'
+      ? (activeState.tool ? activeState.tool.label : EMPLOYEE_RUNTIME_LABEL[activeState.status])
+      : EMPLOYEE_STATUS_LABEL[activeEntry ? activeEntry.status : 'idle'])
+    : ''
 
   return h('section', { className: 'cy9-office-shell' },
     h('div', { className: 'cy9-office-head' },
@@ -131,6 +141,21 @@ export function OfficeWorld(props: {
       }, `${Math.round(level * 100)}%`))),
     ),
     h(NowRow, { presence, staff, onSelect }),
+    // 选中一个人就在这里给出一条**必定点得到**的操作栏。
+    // 小人身上那张悬浮卡永远够不着：它绝对定位在 1200×720 的办公室世界里，
+    // 而 .cy9-office-viewport 通常只有一百多像素高（工作群面板占掉了中栏大半），
+    // 卡片连同「@ 本人」整个落在可视区外，鼠标点下去命中的是下面的聊天面板 —— 实测 5 个可见小人全中。
+    // 这一行是办公室外壳的普通 flex 子项，不进滚动区、不被裁，所以一定可点。
+    activeStaff ? h('div', { className: 'cy9-office-dock' },
+      h('b', null, activeStaff.name),
+      h('span', null, activeStaffLine),
+      h('button', { type: 'button', onClick: () => onOpenProfile(activeStaff.id), title: `打开 ${activeStaff.name} 的员工档案` }, '打开档案'),
+      h('button', {
+        type: 'button', className: 'primary',
+        onClick: () => onTalk(activeStaff), title: `把 @${activeStaff.name} 写进下方输入框（不会替你发送）`,
+      }, `@ ${activeStaff.name}`),
+      h('button', { type: 'button', className: 'quiet', onClick: () => onSelect(activeStaff.id), title: '取消选中' }, '收起'),
+    ) : null,
     h('div', { className: 'cy9-office-viewport' },
       h('div', { className: 'cy9-office-scroll', style: { width: OFFICE_WIDTH * zoom, height: OFFICE_HEIGHT * zoom } },
         h('div', {

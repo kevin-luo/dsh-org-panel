@@ -62,7 +62,10 @@ export function EmployeeSprite(props: {
     'data-status': status,
     style: { left: placement.x, top: placement.y },
     onClick: () => onSelect(staff.id), onDoubleClick: () => onTalk(staff),
-    title: `${staff.name} · ${statusText}${station ? ` · ${station}` : ''} · 双击直接 @ 本人`,
+    // 文案按真实事件处理对齐：单击 onSelect（选中并在办公室顶部展开操作栏），双击 onTalk（写 @ 草稿）。
+    // 小人只有几十像素、还可能被工作群面板压住一半，双击不一定两下都落在同一个元素上；
+    // 所以这里必须把「单击也能 @」的那条路一起说清楚，别让老板以为双击是唯一入口。
+    title: `${staff.name} · ${statusText}${station ? ` · ${station}` : ''} · 单击选中（顶部出现「@ ${staff.name}」按钮），双击直接 @ 本人`,
   },
     h('span', { className: 'cy9-sprite-img' },
       BADGE[status] ? h('span', { className: 'cy9-sprite-badge' }, BADGE[status]) : null,

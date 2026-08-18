@@ -98,11 +98,45 @@ export function parseStaffMeeting(text: string): StaffMeeting | null {
   }
 }
 
+/**
+ * 路由哨兵本体。真机实录里模型吐的是 `[NIUMA_DIRECT_ACK] [NIUMA_DIRECT_ACK]` ——
+ * 同一个哨兵重复两遍、中间带空格。所以这里一律按「出现即剥掉」处理，
+ * 绝不做整串等值匹配：那正是哨兵漏进公司群的直接原因。
+ * 括号写一层还是两层、里面带不带空白，都当同一个哨兵。
+ */
+const ROUTER_SENTINEL = /\[{1,2}\s*NIUMA_(?:RELAY|DIRECT)_ACK\s*\]{1,2}/g
+/** 同一条规则的探测用副本。带 g 的正则有 lastIndex 状态，绝不能拿去 test（测试与生产会不一致）。 */
+const ROUTER_SENTINEL_ONCE = /\[{1,2}\s*NIUMA_(?:RELAY|DIRECT)_ACK\s*\]{1,2}/
+
+/** 路由话术：整条就是「已转交 / 已直连」这类内部信号，剥无可剥，只能整条不显示。 */
+const ROUTER_PHRASES: readonly RegExp[] = [
+  /^(?:已接通|消息已转交给).*(?:独立子代理|本人回复|等.*回复)/,
+  /^老板已直连 .*?(?:正在处理|等待本人回复)/,
+]
+
+/**
+ * 剥掉全部路由哨兵，保留哨兵之外的真实内容（换行与缩进照原样留着）。
+ * 「剥离」与「整条隐藏」是两件事：员工的真实回复绝不能因为混进了一个哨兵就被株连吞掉。
+ */
+export function stripRouterSentinels(text: unknown): string {
+  const value = typeof text === 'string' ? text : ''
+  if (!value.includes('NIUMA_')) return value.trim()
+  const lines: string[] = []
+  for (const line of value.split('\n')) {
+    // 没有哨兵的行原样留着：缩进、空行、代码块一个字节都不许动。
+    if (!ROUTER_SENTINEL_ONCE.test(line)) { lines.push(line); continue }
+    const rest = line.replace(ROUTER_SENTINEL, '').trim()
+    // 整行只有哨兵：连这一行一起去掉，不留一行空白把真实内容撑开。
+    if (rest) lines.push(rest)
+  }
+  return lines.join('\n').trim()
+}
+
+/** 整条消息只是路由内部信号：吐几遍、什么顺序、带不带空格换行，剥完为空就一律不展示。 */
 export function isRouterOnlyMessage(text: string): boolean {
-  const value = text.trim()
-  return /^\[NIUMA_(?:RELAY|DIRECT)_ACK\]$/.test(value)
-    || /^(?:已接通|消息已转交给).*(?:独立子代理|本人回复|等.*回复)/.test(value)
-    || /^老板已直连 .*?(?:正在处理|等待本人回复)/.test(value)
+  const value = stripRouterSentinels(text)
+  if (!value) return true
+  return ROUTER_PHRASES.some((phrase) => phrase.test(value))
 }
 
 export function isStaffRoutingAssistant(node: any): boolean {
