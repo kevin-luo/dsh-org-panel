@@ -31,7 +31,7 @@ export type OrgPanelRpc = {
  * 三态结果：
  *   ok          —— host 应答且业务成功；
  *   error       —— 通道是通的，但这次调用失败（host 明确回了 error，或返回结构不认识）；
- *   unavailable —— 连一个合法 RPC 信封都没拿回来：频道没注册 / 没有 httpServer / fixture 模式 / 网络断。
+ *   unavailable —— 连一个合法 RPC 信封都没拿回来：频道没注册 / 没有 webServer / fixture 模式 / 网络断。
  * 三者都不许被静默吞掉，unavailable 也不许当成「没有数据」渲染成 0。
  */
 export type RpcOutcome<T> =
@@ -42,7 +42,7 @@ export type RpcOutcome<T> =
 /** 页面里根本没有 connection 服务（某些部署形态）。 */
 export const NO_CONNECTION = '当前运行时没有给 client 提供 connection 服务，面板无法直接读写 host'
 /** connection 在，但 `/org-panel` 频道没应答。 */
-export const CHANNEL_DOWN = 'host 没有应答 /org-panel 频道（插件 host 未挂载，或该部署形态没有 httpServer）'
+export const CHANNEL_DOWN = 'host 没有应答 /org-panel 频道（插件 host 未挂载，或该部署形态没有 webServer 传输层）'
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) return error.message || String(error)

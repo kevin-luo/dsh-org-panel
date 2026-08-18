@@ -30,7 +30,7 @@ export type OrgPanelHostFields = {
   gateway?: ModelGateway
   plugins?: PluginRuntimeHandle | null
   communication?: CommunicationManager
-  /** /org-panel RPC 频道句柄；registered() === false 表示这套部署没有 httpServer/connection。 */
+  /** /org-panel RPC 频道句柄；registered() === false 表示这套部署没有 connection 传输层（原因看 pendingReason()）。 */
   channel?: OrgPanelChannelHandle
 }
 
@@ -159,7 +159,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   }
 
   // /org-panel RPC 频道：把上面四层的真实状态直接送到浏览器里的设置中心。
-  // 无条件调用；没有 connection / httpServer 时它自己安静降级，绝不抛。
+  // 无条件调用；没有 connection 时它自己安静降级，绝不抛。
   let channel: OrgPanelChannelHandle | undefined
   try {
     const deps: OrgPanelDeps = { core, gateway, plugins, communication, config }

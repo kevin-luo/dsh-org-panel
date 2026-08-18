@@ -6,7 +6,7 @@ export type { OrgPanelCore } from './host-v2'
 
 // /org-panel RPC 频道：设置中心直接读真实台账的那条管子。
 // 频道名与端点表导出来，是为了让前端与回归测试用同一份常量，而不是两边各写一个字符串。
-export { ORG_PANEL_CHANNEL, registerOrgPanelChannel, createDispatcher, type EndpointMap, type OrgPanelChannelHandle } from './host/org-panel-rpc'
+export { ORG_PANEL_CHANNEL, CHANNEL_REQUIRES, registerOrgPanelChannel, createDispatcher, type EndpointMap, type OrgPanelChannelHandle } from './host/org-panel-rpc'
 export { readEndpoints, type OrgPanelDeps, type StorageFileEntry } from './host/org-panel-read'
 export { writeEndpoints } from './host/org-panel-write'
 

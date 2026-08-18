@@ -79,7 +79,12 @@ export function toolRegistry(extra = []) {
 
 /**
  * 造一个真 cordis root Context，并 provide 上 DSH 的三个必需服务。
- * services 里额外的键会被一并 provide（httpServer / connection 等）。
+ * services 里额外的键会被一并 provide。
+ *
+ * 注意：**浏览器传输层（webServer / connection）不要从这里传**。
+ * 在 root 上 provide 等于把服务塞进 root fiber 的 store，于是任何 fiber 都能读到它 ——
+ * 那正是让「插件 inject 了一个宿主根本没有的服务名」这种 bug 溜过单测的漏洞。
+ * 传输层一律用下面的 dshWebStack()，它按真实 DSH 的形态各自起一个 fiber。
  */
 export function realCordisCtx(services = {}) {
   const logs = []
@@ -107,42 +112,68 @@ export function realCordisCtx(services = {}) {
 }
 
 /**
- * 一个忠实复刻 DSH HostConnectionService 关键行为的假 connection 服务。
+ * 按**真实 DSH 的形态**装一套浏览器传输栈。这个夹具是本轮 405 事故的直接产物，
+ * 三条形态特征一条都不能省，否则它又会变成一层假保险：
  *
- * 关键在 handle()：真实现最后一行是 `owner.effect(() => owner.httpServer.register(route))`，
- * 其中 owner 是**读取 connection 服务的那个 context**（Service 的 this.ctx 会被 getTraceable
- * 重绑到读它的那个 context）。也就是说读 rpc 的 context 自己必须能读到 httpServer，
- * 否则 effect 内部会抛「cannot get property "httpServer" without inject」。
- * 这个夹具用真 cordis Service 原样保留这条约束 —— 正是它让 R1 / R2 有意义。
+ *  1. **服务名叫 `webServer`，不叫 `httpServer`。**
+ *     @deepseek-ai/dsh-host-webserver@0.1.0-rc.7 的 lib/index.js 第 36 行是
+ *     `super(ctx, "webServer")`；只有 0.0.1-rc.1 那份旧 .d.ts 里写的是 httpServer。
+ *     旧夹具跟着旧 typings 用了 httpServer，于是「插件 inject 了一个宿主没有的名字」
+ *     这件事在单测里永远暴露不出来 —— 因为夹具提供的正好是同一个错名字。
+ *  2. **两个服务各自由自己的 plugin fiber 提供，不在 root 上 provide。**
+ *     root.provide() 会把服务写进 root fiber 的 store，任何 fiber 都读得到；
+ *     真实 DSH 里 webServer 只有 connection 自己的 fiber 读得到（它 inject 了它）。
+ *     org-panel 那个 fiber 读 webServer 一定抛 —— 而且**本来就该抛**，因为
+ *     connection.rpc.handle() 是通过 cordis 的 shadow 机制回到它自己的 fiber 去取的。
+ *  3. **connection 声明 `inject: ['webServer']`**，与真实现一致：没有 webServer 时
+ *     connection 自己都起不来，更不会有半截可用的传输层。
+ *
+ * @param options.webServer  是否提供 webServer 服务
+ * @param options.connection 是否提供 connection 服务
+ * @param options.connectionInject connection 是否 inject webServer。置 false 用来构造
+ *   「传输层残缺」的宿主：connection 在，但它的 effect 读不到 webServer，handle() 当场抛。
+ * @param options.webServerName 服务名。默认 'webServer'；传别的名字可以模拟 DSH 再次改名。
  */
-export function connectionService(root) {
-  const calls = []
-  class FakeConnection extends CordisService {
-    get rpc() {
-      const owner = this.ctx
-      return {
-        handle(channel, handler, options) {
-          calls.push({ channel, options, handler })
-          // 与真实现同构：owner.httpServer 是裸属性读，owner 没 inject 过 httpServer 就会抛。
-          return owner.effect(() => owner.httpServer.register({ kind: 'prefix', path: channel, handler }), `fake-connection: ${channel}`)
-        },
-      }
-    }
-  }
-  const instance = new FakeConnection(root, 'connection')
-  return { calls, instance }
-}
-
-/** 一个只记账的假 httpServer 服务。routes 就是当前真实挂着的路由。 */
-export function fakeHttpServer() {
+export async function dshWebStack(root, { webServer = true, connection = true, connectionInject = true, webServerName = 'webServer' } = {}) {
   const routes = []
-  return {
-    routes,
-    service: {
-      register(route) { routes.push(route); return () => { const index = routes.indexOf(route); if (index >= 0) routes.splice(index, 1) } },
-      unregister(route) { const index = routes.indexOf(route); if (index >= 0) routes.splice(index, 1) },
+  const calls = []
+  const service = {
+    register(route) {
+      routes.push(route)
+      return () => { const index = routes.indexOf(route); if (index >= 0) routes.splice(index, 1) }
     },
+    registerUpgrade() { return () => {} },
   }
+
+  if (webServer) {
+    await root.plugin({ name: 'fake-webserver', apply(ctx) { ctx.provide(webServerName, service) } })
+  }
+  if (connection) {
+    await root.plugin({
+      name: 'fake-connection',
+      inject: connectionInject ? [webServerName] : [],
+      apply(ctx) {
+        class FakeConnection extends CordisService {
+          get rpc() {
+            // 与真实现逐字同构：owner 是 cordis 给取值器造的 shadow context，
+            // 它的 webServer 走的是 (ctx[shadow] ?? ctx).fiber —— 即 connection 自己这个 fiber。
+            const owner = this.ctx
+            return {
+              handle(channel, handler, options) {
+                calls.push({ channel, options, handler })
+                return owner.effect(
+                  () => owner[webServerName].register({ kind: 'prefix', path: channel, handler }),
+                  `fake-connection: ${channel}`,
+                )
+              },
+            }
+          }
+        }
+        new FakeConnection(ctx, 'connection')
+      },
+    })
+  }
+  return { routes, calls }
 }
 
 /** 等 cordis fiber settle（inject 子 fiber 是异步 resolve 的）。 */

@@ -41,7 +41,7 @@ const UNKNOWN = '未知'
  * 前一种说法是错的，而且它同时劝退老板和下一个改这块代码的人。
  */
 export const APPROVAL_OFFLINE_HINT = [
-  '面板此刻批不了：当前运行时没有提供 /org-panel RPC 频道（插件 host 未挂载，或这个部署形态没有 httpServer），浏览器里的按钮到不了 Plugin Runtime。',
+  '面板此刻批不了：当前运行时没有提供 /org-panel RPC 频道（插件 host 未挂载，或这个部署形态没有 webServer 传输层），浏览器里的按钮到不了 Plugin Runtime。',
   'host 把这条频道挂上之后，这里会直接出现真正能点的「批准」按钮 —— 那一下点击仍然是人类动作，模型永远走不到这条路。',
   '在通道恢复之前，走得通的批准方式有两条，两条也都是人类动作：',
   '① 在 cordis 配置的 pluginInstall.preapproved 里写上这个包名并重启，员工再次提交同一个包时会被自动批准；',

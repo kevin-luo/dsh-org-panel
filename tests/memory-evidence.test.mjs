@@ -26,7 +26,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { connectionService, fakeHttpServer, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
+import { dshWebStack, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
 
 const { apply, inject } = await import('../lib/index.js')
 
@@ -177,10 +177,9 @@ function fakeSubagents(replies = {}) {
 
 async function boot(name, replies) {
   const dir = await scratch(name)
-  const http = fakeHttpServer()
   const subagents = fakeSubagents(replies)
-  const { root, registered } = realCordisCtx({ httpServer: http.service, subagents: subagents.service })
-  connectionService(root)
+  const { root, registered } = realCordisCtx({ subagents: subagents.service })
+  const web = await dshWebStack(root)
 
   let host
   const fiber = root.plugin({
@@ -195,7 +194,7 @@ async function boot(name, replies) {
   })
   await settleFiber(fiber)
 
-  const route = http.routes[0]
+  const route = web.routes[0]
   assert.ok(route, '/org-panel 频道没有注册，本组用例的前提不成立')
   const callEndpoint = (endpoint, payload = {}) => route.handler(endpoint, payload, new AbortController().signal)
   /** 一个直连真实 host 端点的 client 侧 rpc：浏览器发过来的那一次调用就走这条路。 */

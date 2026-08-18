@@ -19,7 +19,7 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createRequire } from 'node:module'
-import { connectionService, fakeHttpServer, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
+import { dshWebStack, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const SRC = resolve(HERE, '..', 'src')
@@ -130,9 +130,8 @@ function fakeVisibility(initial = true) {
 
 test('E1a host 的 events/since 真的挂在 /org-panel 上，且带游标只回增量', async () => {
   const dir = await scratch('event-push-channel')
-  const http = fakeHttpServer()
-  const { root } = realCordisCtx({ httpServer: http.service })
-  connectionService(root)
+  const { root } = realCordisCtx()
+  const web = await dshWebStack(root)
   const fiber = root.plugin({
     name: 'dsh-org-panel', inject,
     apply(ctx, cfg) { return apply(ctx, cfg) },
@@ -144,7 +143,7 @@ test('E1a host 的 events/since 真的挂在 /org-panel 上，且带游标只回
   })
   await settleFiber(fiber)
 
-  const route = http.routes[0]
+  const route = web.routes[0]
   assert.ok(route, '/org-panel 频道没有注册，事件推送无从谈起')
   const call = (payload) => route.handler('events/since', payload, new AbortController().signal)
 

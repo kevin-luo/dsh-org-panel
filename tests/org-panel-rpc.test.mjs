@@ -10,28 +10,27 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFile, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
-import { connectionService, fakeHttpServer, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
+import { dshWebStack, realCordisCtx, scratch, settleFiber } from './_helpers.mjs'
 
-const { apply, inject } = await import('../lib/index.js')
+const { apply, inject, CHANNEL_REQUIRES, readCtxService } = await import('../lib/index.js')
 
 /**
- * 在真 cordis root 上装一次插件。
- * options.httpServer / options.connection 决定这次部署形态里有没有那两个服务。
+ * 在真 cordis root 上装一次插件，传输层按真实 DSH 形态铺（见 _helpers 的 dshWebStack）。
+ * options.webServer / options.connection / options.connectionInject 决定这次部署形态。
  */
-async function boot(name, { httpServer = true, connection = true, config = {} } = {}) {
+async function boot(name, { webServer = true, connection = true, connectionInject = true, config = {} } = {}) {
   const dir = await scratch(name)
-  const http = fakeHttpServer()
-  const services = httpServer ? { httpServer: http.service } : {}
-  const { root, logs, registered } = realCordisCtx(services)
-  const conn = connection ? connectionService(root) : null
+  const { root, logs, registered } = realCordisCtx()
+  const web = await dshWebStack(root, { webServer, connection, connectionInject })
 
   let host
+  let pluginCtx
   const load = () => {
     let captured
     const fiber = root.plugin({
       name: 'dsh-org-panel',
       inject,
-      apply(ctx, cfg) { captured = apply(ctx, cfg); return captured },
+      apply(ctx, cfg) { pluginCtx = ctx; captured = apply(ctx, cfg); return captured },
     }, {
       memoryFile: join(dir, 'evolution.json'),
       companyFile: join(dir, 'company.json'),
@@ -42,56 +41,120 @@ async function boot(name, { httpServer = true, connection = true, config = {} } 
     return settleFiber(fiber).then(() => { host = captured; return fiber })
   }
   const fiber = await load()
-  return { dir, root, fiber, get host() { return host }, logs, registered, http, conn, load }
+  return { dir, root, fiber, get host() { return host }, get pluginCtx() { return pluginCtx }, logs, registered, web, load }
 }
 
 /** 直接打频道的 handler：这就是浏览器发过来的那一次调用真正会走到的函数。 */
 async function call(ctx, endpoint, payload = {}) {
-  const route = ctx.http.routes[0]
+  const route = ctx.web.routes[0]
   assert.ok(route, '频道没有注册，无法调用')
   return route.handler(endpoint, payload, new AbortController().signal)
 }
 
 // ---------------------------------------------------------------------------
-// R1：没有 httpServer 的部署形态必须安静降级
+// R0（本轮 405 事故的回归用例）：频道的 inject 只能写宿主真实提供得出来的服务名
+//
+// 事故经过：这里曾经写的是 ctx.inject(['httpServer', 'connection'], …)。
+// 而真实 DSH 的 web 服务叫 **webServer**（dsh-host-webserver 的 super(ctx,'webServer')），
+// 只有一份早已过期的 0.0.1-rc.1 .d.ts 里写着 httpServer。cordis 的 inject 全是必需依赖：
+// 多写一个宿主没有的名字，子 fiber 就永远停在 PENDING、回调一次都不执行、**没有任何人报错**，
+// 表现只有浏览器控制台里的 16 条 405。
+// 当时的夹具跟着同一份过期 typings 也用了 httpServer，于是两边一起错、单测一路绿。
+// 这条用例把「名字」本身变成断言对象。
 // ---------------------------------------------------------------------------
 
-test('R1 只有 connection 没有 httpServer 时不注册、不抛错，host 照常完整', async () => {
-  const ctx = await boot('rpc-no-http', { httpServer: false })
+test('R0 CHANNEL_REQUIRES 里的每个名字都必须是真实宿主提供得出来的服务', async () => {
+  const ctx = await boot('rpc-requires')
+
+  assert.deepEqual([...ctx.host.channel.requires], [...CHANNEL_REQUIRES], 'handle 暴露的依赖必须就是代码里那一份，不许两处各写一遍')
+  for (const name of CHANNEL_REQUIRES) {
+    assert.notEqual(
+      readCtxService(ctx.root, name), undefined,
+      `宿主里没有名为 ${name} 的服务：子 fiber 会永远停在 PENDING，而且不会有任何人报错`,
+    )
+  }
+
+  // 反面：DSH 的 web 服务名是 webServer。把 httpServer 写进 inject 就是这次 405 的根因。
+  assert.notEqual(readCtxService(ctx.root, 'webServer'), undefined, '夹具必须按真实 DSH 提供 webServer')
+  assert.equal(readCtxService(ctx.root, 'httpServer'), undefined, 'httpServer 在任何一版真实 DSH 运行时里都不存在')
+  assert.equal(CHANNEL_REQUIRES.includes('httpServer'), false)
+
+  // 我们自己这个 fiber 读不到 webServer —— 而且**本来就不该读得到**：
+  // connection.rpc.handle() 是靠 cordis 的 shadow 机制回自己的 fiber 取的。
+  assert.throws(() => ctx.pluginCtx.webServer, /without inject/)
+  assert.equal(ctx.host.channel.registered(), true, '读不到 webServer 完全不妨碍频道挂上')
+})
+
+// ---------------------------------------------------------------------------
+// R1：传输层不全的部署形态必须安静降级
+// ---------------------------------------------------------------------------
+
+test('R1 connection 在但它读不到 webServer 时不注册、不抛错，host 照常完整', async () => {
+  // connectionInject:false = 残缺宿主：connection 服务起来了，但 handle() 里的
+  // owner.webServer 读不到，effect 当场抛。这一抛必须被我们接住，不能拖垮插件。
+  const ctx = await boot('rpc-no-web', { webServer: false, connectionInject: false })
   assert.equal(ctx.fiber.state, 2, 'fiber 必须仍然活跃：没有 RPC 只是少一条读数据的路，不是装配失败')
   assert.ok(ctx.host.core, '员工核心必须照常可用')
   assert.ok(ctx.host.gateway)
-  assert.equal(ctx.host.channel.registered(), false, '两个服务不齐就不该注册频道')
-  assert.equal(ctx.http.routes.length, 0)
+  assert.equal(ctx.host.channel.registered(), false, '路由没挂上就不许自称已注册')
+  assert.equal(ctx.web.routes.length, 0)
+  assert.match(ctx.host.channel.pendingReason(), /without inject|webServer/, '必须说出真实原因，不许回「未知错误」')
   const declared = ctx.logs.filter(([, text]) => text.includes('已声明 /org-panel 频道'))
   assert.equal(declared.length, 1, '必须留一行日志说明为什么没有频道，不许悄无声息')
 })
 
-test('R1b 完全没有 connection 服务时同样安静降级', async () => {
+test('R1b 完全没有 connection 服务时同样安静降级，并写清楚缺的是哪个服务', async () => {
   const ctx = await boot('rpc-no-conn', { connection: false })
   assert.equal(ctx.fiber.state, 2)
   assert.equal(ctx.host.channel.registered(), false)
-  assert.equal(ctx.http.routes.length, 0)
+  assert.equal(ctx.web.routes.length, 0)
+  assert.match(ctx.host.channel.pendingReason(), /connection/)
+  // watchdog：子 fiber 停在 PENDING 时必须有一行日志点名缺的服务，否则又是一次「安静的 405」。
+  const warned = ctx.logs.filter(([level, text]) => level === 'warn' && text.includes('没有提供 connection'))
+  assert.equal(warned.length, 1, '永久 PENDING 必须留下点名到服务的告警')
 })
 
 // ---------------------------------------------------------------------------
-// R2：两个服务都在时真的注册，且卸载后不残留
+// R2：传输层齐备时真的注册，且卸载后不残留
 // ---------------------------------------------------------------------------
 
-test('R2 httpServer + connection 都在时注册一条 /org-panel 路由，连载两次不重复注册', async () => {
+test('R2 真实 DSH 形态下注册一条 /org-panel 路由，连载两次不重复注册', async () => {
   const ctx = await boot('rpc-register')
   assert.equal(ctx.host.channel.registered(), true)
-  assert.equal(ctx.http.routes.length, 1)
-  assert.equal(ctx.http.routes[0].path, '/org-panel')
-  assert.equal(ctx.conn.calls.length, 1)
+  assert.equal(ctx.host.channel.pendingReason(), null)
+  assert.equal(ctx.web.routes.length, 1)
+  assert.equal(ctx.web.routes[0].path, '/org-panel')
+  assert.equal(ctx.web.calls.length, 1)
   // loopback：DSH 对该档位把 trustedHosts 置空，非回环来源一律 403。设置中心是本机操作，不放宽。
-  assert.equal(ctx.conn.calls[0].options.authority, 'loopback')
+  assert.equal(ctx.web.calls[0].options.authority, 'loopback')
 
   await ctx.fiber.dispose()
-  assert.equal(ctx.http.routes.length, 0, 'disposer 必须真的把 HTTP 路由撤掉，否则热重载会叠加')
+  assert.equal(ctx.web.routes.length, 0, 'disposer 必须真的把 HTTP 路由撤掉，否则热重载会叠加')
 
   await ctx.load()
-  assert.equal(ctx.http.routes.length, 1, '重载后只能有一条路由')
+  assert.equal(ctx.web.routes.length, 1, '重载后只能有一条路由')
+})
+
+test('R2b DSH 再次给 web 服务改名也不该波及本频道（我们从不 inject 它）', async () => {
+  // 把服务名换成一个谁都没见过的名字：connection 自己 inject 它、自己读它，
+  // 我们这边一个字都不用改，频道照样挂得上。这就是「只 inject connection」的价值。
+  const ctx = await boot('rpc-renamed', { webServer: true })
+  assert.equal(ctx.host.channel.registered(), true)
+
+  const dir = await scratch('rpc-renamed-2')
+  const { root } = realCordisCtx()
+  const web = await dshWebStack(root, { webServerName: 'someFutureWebService' })
+  let host
+  const fiber = root.plugin({ name: 'dsh-org-panel', inject, apply(ctx2, cfg) { host = apply(ctx2, cfg); return host } }, {
+    memoryFile: join(dir, 'evolution.json'),
+    companyFile: join(dir, 'company.json'),
+    approvalsFile: join(dir, 'plugin-approvals.json'),
+    healthCheckOnStart: false,
+  })
+  await settleFiber(fiber)
+  assert.equal(host.channel.registered(), true, 'web 服务改名不该让 /org-panel 掉线')
+  assert.equal(web.routes.length, 1)
+  assert.equal(web.routes[0].path, '/org-panel')
 })
 
 // ---------------------------------------------------------------------------

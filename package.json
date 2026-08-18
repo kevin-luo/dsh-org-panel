@@ -50,6 +50,7 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "size-check": "node scripts/check-size.mjs",
+    "verify:dsh": "node scripts/verify-dsh-channel.mjs",
     "prepack": "npm run build && npm run size-check"
   },
   "publishConfig": {
