@@ -141,21 +141,6 @@ export function OfficeWorld(props: {
       }, `${Math.round(level * 100)}%`))),
     ),
     h(NowRow, { presence, staff, onSelect }),
-    // 选中一个人就在这里给出一条**必定点得到**的操作栏。
-    // 小人身上那张悬浮卡永远够不着：它绝对定位在 1200×720 的办公室世界里，
-    // 而 .cy9-office-viewport 通常只有一百多像素高（工作群面板占掉了中栏大半），
-    // 卡片连同「@ 本人」整个落在可视区外，鼠标点下去命中的是下面的聊天面板 —— 实测 5 个可见小人全中。
-    // 这一行是办公室外壳的普通 flex 子项，不进滚动区、不被裁，所以一定可点。
-    activeStaff ? h('div', { className: 'cy9-office-dock' },
-      h('b', null, activeStaff.name),
-      h('span', null, activeStaffLine),
-      h('button', { type: 'button', onClick: () => onOpenProfile(activeStaff.id), title: `打开 ${activeStaff.name} 的员工档案` }, '打开档案'),
-      h('button', {
-        type: 'button', className: 'primary',
-        onClick: () => onTalk(activeStaff), title: `把 @${activeStaff.name} 写进下方输入框（不会替你发送）`,
-      }, `@ ${activeStaff.name}`),
-      h('button', { type: 'button', className: 'quiet', onClick: () => onSelect(activeStaff.id), title: '取消选中' }, '收起'),
-    ) : null,
     h('div', { className: 'cy9-office-viewport' },
       h('div', { className: 'cy9-office-scroll', style: { width: OFFICE_WIDTH * zoom, height: OFFICE_HEIGHT * zoom } },
         h('div', {
@@ -187,6 +172,21 @@ export function OfficeWorld(props: {
         ),
       ),
     ),
+    // 选中一个人就贴底给出一条**必定点得到**的操作栏。
+    // 小人身上那张悬浮卡永远够不着：它绝对定位在 1200×720 的办公室世界里，
+    // 而 .cy9-office-viewport 通常只有一百多像素高（工作群面板占掉了中栏大半），
+    // 卡片连同「@ 本人」整个落在可视区外 —— 真机实测 5 个可见小人无一例外，
+    // 鼠标点下去命中的是下面的聊天面板。这条操作栏挂在办公室外壳上、不进滚动裁剪区，所以一定可点。
+    activeStaff ? h('div', { className: 'cy9-office-dock' },
+      h('b', null, activeStaff.name),
+      h('span', null, activeStaffLine),
+      h('button', { type: 'button', onClick: () => onOpenProfile(activeStaff.id), title: `打开 ${activeStaff.name} 的员工档案` }, '打开档案'),
+      h('button', {
+        type: 'button', className: 'primary',
+        onClick: () => onTalk(activeStaff), title: `把 @${activeStaff.name} 写进下方输入框（不会替你发送）`,
+      }, `@ ${activeStaff.name}`),
+      h('button', { type: 'button', className: 'quiet', onClick: () => onSelect(activeStaff.id), title: '取消选中' }, '收起'),
+    ) : null,
   )
 }
 
