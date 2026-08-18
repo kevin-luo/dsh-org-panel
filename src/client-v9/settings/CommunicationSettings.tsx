@@ -34,6 +34,8 @@ export type CommunicationSettingsData = Partial<CommunicationSummary> & {
   /** 公司频道名，用于把 companyChannelId 显示成人话；缺省时直接显示 id。 */
   channels?: Array<{ id: string; name: string }>
   employees?: Array<{ id: string; name: string }>
+  /** host 明确回答「通讯层本次没挂上」时给的真实原因。有它就原样上屏，绝不显示成「未配置」。 */
+  reason?: string
   loaded?: boolean
 }
 
@@ -116,7 +118,12 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
   const [openId, setOpenId] = useState<string | null>(null)
 
   return h('div', { className: 'cy9-set-main' },
-    !loaded ? h('div', { className: 'cy9-set-banner' }, '面板没有拿到通讯配置摘要（host 未下发 CommunicationManager.summary()）。下面每一行的「未知」只表示面板读不到，不代表老板没有配置飞书 / QQ / 微信。') : null,
+    !loaded ? h('div', { className: 'cy9-set-banner' },
+      data?.reason
+        // host 明确说了为什么拿不到：原样转述，比我们自己猜「大概是没下发」准确得多。
+        ? `面板没有拿到通讯配置摘要 —— host 的原话：${data.reason}`
+        : '面板没有拿到通讯配置摘要（host 未下发 CommunicationManager.summary()）。下面每一行的「未知」只表示面板读不到，不代表老板没有配置飞书 / QQ / 微信。',
+    ) : null,
     h(SettingsCard, {
       title: '通讯渠道',
       meta: loaded ? (adapters.length ? `${adapters.filter((item) => item.state === 'connected').length}/${adapters.length} 已连接` : '未配置') : '未读取',

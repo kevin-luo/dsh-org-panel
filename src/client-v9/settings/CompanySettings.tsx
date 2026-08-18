@@ -27,6 +27,11 @@ export type CompanySettingsData = {
   companyName?: string
   /** 数据快照生成时间，让老板知道自己看的是什么时候的状态。 */
   generatedAt?: number
+  /**
+   * 这一屏数据的真实来源（host 实时读取 / 本会话工具结果 / 本机缓存）。
+   * 降级必须上屏：老板有权知道自己看的是不是此刻的状态。
+   */
+  source?: string
   loading?: boolean
   error?: string | null
   employees?: EmployeeSettingsData
@@ -188,7 +193,11 @@ export function CompanySettings(props: {
       h('div', { className: 'cy9-set-head' },
         h('div', { className: 'cy9-set-head-copy' },
           h('b', null, '公司设置'),
-          h('span', null, [data?.companyName || '赛博公司', data?.generatedAt ? `数据时间 ${formatDateTime(data.generatedAt)}` : '尚未加载持久化快照'].join(' · ')),
+          h('span', { title: data?.source }, [
+            data?.companyName || '赛博公司',
+            data?.source || '',
+            data?.generatedAt ? `数据时间 ${formatDateTime(data.generatedAt)}` : '尚未加载持久化快照',
+          ].filter(Boolean).join(' · ')),
         ),
         h(ActionButton, { label: '刷新', busyLabel: '读取中…', run: actions?.refresh ? (() => actions.refresh!()) : undefined, hint: '当前运行时未提供设置数据读取能力' }),
         h('button', { type: 'button', className: 'cy9-set-close', onClick: onClose, title: '关闭（Esc）' }, '✕'),

@@ -1,13 +1,209 @@
 # 「赛博公司」挂载示例（DeepSeek Harness / Cordis composition）
-# 把下面这行放进 agent preset 的 composition（其余行保留你已有的内容）：
+#
+# 把 org-panel 这一行放进 agent preset 的 composition（其余行保留你已有的内容）。
+# 下面把所有真实被代码读取的配置项都写全了，每一项都可以直接复制。
+# 不需要的段整段删掉即可 —— 所有段都是可选的，删掉就是「不启用该能力」。
+#
+# 字段级完整说明见 docs/CONFIG.md。
+#
+# 三条硬规则（写错会被代码当场拒绝，不是提示）：
+#   1. 任何密钥都只能写成 env:环境变量名 或 secret:本地库条目名，明文一律 throw。
+#   2. communication.adapters 默认 enabled: false，不显式写 true 就不会连接。
+#   3. 会话/用户权限默认 read-only，不显式提权就不会有任何写操作。
 
 - id: org-panel
   name: dsh-org-panel
   config:
+    # ---------------------------------------------------------------------
+    # 1. 界面（client 侧读取）
+    # ---------------------------------------------------------------------
     tabLabel: 赛博公司
-    companyName: 赛博公司
+    companyName: 赛博公司 · AI 员工总部
     chatEnabled: true
-    # 可选：强制指定办公室/员工图片的资产根路径（需以 / 结尾，其下应有 assets/ 目录）。
-    # 默认会根据 client.js 的加载 URL 自动探测；若图片不显示可手动指定，例如：
-    # roles 与 staff 可省略，省略时使用内置的秘书与 7 名专业员工。
-    # 如需扩展，请参考 README 的「扩展员工与岗位」。
+
+    # roles / staff 可省略；省略时使用内置的秘书 + 14 名专业员工（共 15 人）。
+    # 一旦写了 staff，就是**整份名册替换**，不是追加 —— 内置 15 人不会再出现。
+    # 内置员工 id：secretary / tech-lead / recruiter / developer / pm / researcher /
+    #             platform / doc / search-specialist / image-creator / video-producer /
+    #             novelist / social-editor / data-analyst / growth
+    # 字段说明见 docs/CONFIG.md 的「员工与岗位」。
+    # staff:
+    #   - id: developer
+    #     name: 小刘
+    #     role: 程序员
+    #     roleId: developer
+    #     emoji: "💻"
+    #     department: 产品研发部
+    #     reportsTo: 老王
+    #     aliases: [刘工]
+    #     brief: 负责后端接口与线上问题排查。
+
+    # ---------------------------------------------------------------------
+    # 2. 数据文件（host 侧；不写则用默认路径，见文末「默认落盘位置」）
+    # ---------------------------------------------------------------------
+    # memoryFile: ~/.dsh-org-panel/evolution.json        # 员工记忆 / 技能 / 履历 / 模型绑定
+    # companyFile: ~/.dsh-org-panel/company.json         # 公司档案 + 模型供应商配置
+    # approvalsFile: ~/.dsh-org-panel/plugin-approvals.json  # 插件安装审批台账
+    # secretsFile: ~/.dsh-org-panel/secrets/credentials.enc  # 本地密钥库
+    # attachmentDir: ~/.dsh-org-panel/attachments        # 外部渠道下载的附件
+
+    # 本地密钥库口令。**强烈建议改用环境变量 DSH_ORG_PANEL_SECRETS_PASSPHRASE**：
+    # 写在这里等于把口令明文落在 yml 里，那就退回到「有等于没有」。
+    # secretsPassphrase: ""
+
+    # ---------------------------------------------------------------------
+    # 3. 模型供应商（能力边界见下方注释，务必读完再配）
+    # ---------------------------------------------------------------------
+    # 本版真正会发出请求的只有 vision 能力（工具 vision_analyze）。
+    # text / image / video / embedding 供应商可以配、可以绑、会出现在 fallback 链里，
+    # 但**没有任何运行时消费它们**：员工说话用的仍然是 DSH 自己的子代理模型。
+    # 也就是说：配 text 供应商不会改变员工用哪个模型思考，只有 vision 配了才真的多一项能力。
+    #
+    # key 就是供应商 id；不写 type 默认 text，不写 provider 默认 openai-compatible，
+    # 不写 enabled 默认 true。baseUrl 没有任何厂商默认值，必须自己填。
+    models:
+      vision-main:
+        type: vision                       # text | vision | image | video | embedding
+        provider: openai-compatible        # openai-compatible | gemini | custom
+        baseUrl: https://your-gateway.example.com/v1   # 会自动补 /chat/completions
+        model: your-vision-model-name      # 供应商侧的真实模型名，不会替你猜
+        apiKeyRef: env:VISION_API_KEY      # 只能是 env: / secret:，明文会被拒绝
+        timeout: 30000
+        enabled: true
+      vision-backup:
+        type: vision
+        provider: gemini                   # 端点形如 <baseUrl>/models/<model>:generateContent
+        baseUrl: https://your-gemini-proxy.example.com/v1beta
+        model: your-multimodal-model
+        apiKeyRef: env:GEMINI_API_KEY
+        enabled: true
+
+    # 默认超时（毫秒），单个供应商的 timeout 优先。
+    # modelTimeout: 30000
+
+    # ---------------------------------------------------------------------
+    # 4. 员工模型绑定：谁优先用哪家（数组顺序即 fallback 顺序）
+    # ---------------------------------------------------------------------
+    # 没绑定的员工走公司级顺序（models 段里 enabled 的同类供应商，按声明顺序）。
+    # 绑定指向的供应商被删/停用/没有对应适配器时，状态如实写成 missing，不假装可用。
+    modelBindings:
+      image-creator:                       # 员工 id（小画），必须是名册里的真实 id
+        vision: [vision-main, vision-backup]
+      search-specialist:                   # 阿搜
+        vision: vision-main
+
+    # ---------------------------------------------------------------------
+    # 5. 插件安装（员工申请 → 人类批准 → 真实安装 → 验证 → 沉淀技能）
+    # ---------------------------------------------------------------------
+    pluginInstall:
+      # auto = 有真实的 DSH 插件管理工具 / shell 工具就用它装（默认）
+      # tool = 只允许通过运行时工具装
+      # none = 只登记不自动装，老板自己在终端执行命令后再跑 staff_plugin_verify
+      executor: auto
+      timeoutMs: 180000                    # 安装命令超时
+      smokeTimeoutMs: 60000                # 冒烟测试超时
+      requestTtlMs: 604800000              # 申请有效期（7 天），过期需重新提交
+
+      # 预批准清单：**在这里写包名 = 老板本人的显式批准**（编辑配置文件是人类动作）。
+      # 写进来的包不再需要在 UI 里点批准，员工申请后会立刻进入安装。谨慎使用。
+      preapproved: []
+      # preapproved:
+      #   - some-dsh-plugin
+      #   - "@scope/another-plugin@1.2.3"
+
+      # 是否探测宿主原生审批弹窗。默认 false，且**建议保持 false**：
+      # DSH 侧未被证实存在 ctx.approvals 一族 API；打开后仍要求宿主对象自己声明
+      # isHumanApproval / kind: 'human-approval' 并回带 requestId + 人类操作者，
+      # 裸 true 一律不算批准。
+      probeHostApproval: false
+
+    # 启动时自动跑一次插件健康检查（把重启后失效的绑定标成 missing）。默认 true。
+    # healthCheckOnStart: true
+
+    # ---------------------------------------------------------------------
+    # 6. 外部通讯渠道（飞书 / QQ / 微信）
+    # ---------------------------------------------------------------------
+    # 现状：只有飞书是真实实现；QQ / 微信是明确未实现的骨架，配了也只会显示 degraded、
+    # 发送会直接报「尚未实现」，不会伪造连接成功。
+    #
+    # 飞书还需要你在插件之外额外做的事，见 README「飞书接入前置条件」：
+    #   · long-conn 模式需要你自己安装 @larksuiteoapi/node-sdk（本包不依赖它）；
+    #     没装会自动降级到 webhook 模式，只在日志里说一声。
+    #   · webhook 模式必须给 options.webhookPort，并且必须有 verificationToken 或
+    #     encryptKey 之一，否则拒绝开端口（宁可不连，也不开一个谁都能伪造的入口）。
+    #   · 默认只绑 127.0.0.1；要对外暴露必须显式写 options.webhookHost，并自己加反向代理。
+    communication:
+      adapters:
+        - id: feishu
+          platform: feishu                 # feishu | qq | wechat
+          name: 飞书
+          enabled: true                    # 不写 = false，不会连接
+          connectionMode: long-conn        # long-conn（需 SDK） | webhook（需 webhookPort）
+          credentials:
+            appId: env:FEISHU_APP_ID
+            appSecret: env:FEISHU_APP_SECRET
+            verificationToken: env:FEISHU_VERIFICATION_TOKEN
+            encryptKey: env:FEISHU_ENCRYPT_KEY
+          options:
+            # domain: https://open.feishu.cn
+            webhookPort: 7788
+            webhookPath: /feishu/event
+            # webhookHost: 127.0.0.1       # 改成非回环地址会在日志里警告，请自行加鉴权
+            # allowUnverifiedEvents: false # 显式 true 才允许无鉴权裸奔，默认拒绝开端口
+          routing:
+            defaultTarget: secretary       # 没 @ 到人时交给谁
+            recognizeMentions: true        # 识别 @员工
+            allowEmployeeCollaboration: false  # 允许员工之间转交
+            maxHops: 4                     # 转交上限（0~12）
+            notifyUndeliverable: true
+          capabilities:
+            text: true
+            image: true
+            file: true
+            audio: false
+            video: false
+          access:
+            # 兜底档位。任何没单独写档位的人 / 群都落到这里，默认 read-only。
+            defaultPermissionMode: read-only
+            allowUnknownUsers: false       # 陌生人默认直接拒绝
+            allowUnknownConversations: false
+            actors:
+              - userId: ou_xxxxxxxxxxxxxxxx
+                name: 老板
+                role: owner                # owner | member | guest
+                permissionMode: danger-full-access
+              - userId: ou_yyyyyyyyyyyyyyyy
+                name: 同事小张
+                role: member
+                permissionMode: workspace-write
+            conversations:
+              - conversationId: oc_xxxxxxxxxxxxxxxx
+                name: 研发群
+                permissionMode: workspace-write
+                # allowedEmployees: [developer, tech-lead]   # 只允许这几位员工在该群应答
+              - conversationId: oc_zzzzzzzzzzzzzzzz
+                name: 公开公告群
+                permissionMode: read-only
+
+      # 把外部群绑到公司内部频道，员工履历里才会带上正确的频道来源。
+      channelBindings:
+        - adapterId: feishu
+          externalConversationId: oc_xxxxxxxxxxxxxxxx
+          companyChannelId: engineering
+          # defaultEmployees: [tech-lead]
+
+# -------------------------------------------------------------------------
+# 默认落盘位置（不配 memoryFile 一类字段时）
+# -------------------------------------------------------------------------
+#   ~/.dsh-org-panel/evolution.json            员工记忆 / 技能 / 履历 / 模型绑定
+#   ~/.dsh-org-panel/company.json              公司档案 + 模型供应商
+#   ~/.dsh-org-panel/plugin-approvals.json     插件安装审批台账
+#   ~/.dsh-org-panel/secrets/credentials.enc   本地密钥库（默认只是「本机混淆」，见 README）
+#   ~/.dsh-org-panel/attachments/              外部渠道附件
+#
+# 对应环境变量（优先级低于 config 里的显式路径）：
+#   DSH_ORG_PANEL_MEMORY_FILE
+#   DSH_ORG_PANEL_COMPANY_FILE
+#   DSH_ORG_PANEL_PLUGIN_APPROVALS_FILE
+#   DSH_ORG_PANEL_SECRETS_FILE
+#   DSH_ORG_PANEL_SECRETS_PASSPHRASE

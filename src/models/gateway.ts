@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path'
 import { CompanyStore, sanitizeModelProvider } from '../persistence/company-store'
 import { EvolutionStore } from '../persistence/evolution-store'
 import { createVisionAnalyzeTool } from '../tools/vision-analyze'
+import { readCtxService } from '../runtime/ctx-service'
 import { defaultProviderRegistry, type ProviderRegistry } from './registry'
 import {
   CAPABILITY_PROVIDER_TYPE, MODEL_CAPABILITIES, MODEL_PROVIDER_TYPES, MODEL_PROVIDER_VENDORS, ModelGatewayError, PROVIDER_TYPE_CAPABILITY,
@@ -20,11 +21,8 @@ import {
   type VisionImageInput, type VisionMode, type VisionRequest, type VisionResult,
 } from './types'
 
-// 本仓库没有 @types/node，只有 src/node-shims.d.ts 里的最小声明；密钥文件加固需要下面两个能力。
-declare module 'node:fs/promises' {
-  export function chmod(path: string, mode: number): Promise<void>
-  export function stat(path: string): Promise<{ mode: number }>
-}
+// 本仓库没有 @types/node，只有 src/node-shims.d.ts 里的最小声明；
+// 密钥文件加固需要的 chmod / stat 已经统一声明在那里，这里不再重复 augment。
 
 const DEFAULT_TIMEOUT = 45_000
 const MAX_IMAGES = 8
@@ -268,10 +266,26 @@ export type SecretService = {
   getSecret?(name: string): unknown
 }
 
-/** 在 ctx 上探测官方 Secret Service，探测失败就用本地密钥库，不硬依赖任何具体实现。 */
+/**
+ * 在 ctx 上探测官方 Secret Service，探测失败就用本地密钥库，不硬依赖任何具体实现。
+ *
+ * 这里必须**惰性逐个**探测：之前写成 `[ctx?.secrets, ctx?.secretService, …]` 这样一个数组字面量，
+ * 数组元素是急求值的，`?.` 挡不住会抛的 Proxy getter —— 真实 cordis Context 上第一个
+ * `ctx.secrets` 就抛 `cannot get property "secrets" without inject`，
+ * registerModelGateway 因此每次都失败，老板看到的「模型 0 / 没有 vision 能力」就是这么来的。
+ */
 export function detectSecretService(ctx: any): SecretService | null {
-  const candidates = [ctx?.secrets, ctx?.secretService, ctx?.secretStore, ctx?.vault, ctx?.dsh?.secrets, ctx?.cordis?.secrets]
-  for (const candidate of candidates) {
+  const probes: Array<() => unknown> = [
+    () => readCtxService(ctx, 'secrets'),
+    () => readCtxService(ctx, 'secretService'),
+    () => readCtxService(ctx, 'secretStore'),
+    () => readCtxService(ctx, 'vault'),
+    () => (readCtxService(ctx, 'dsh') as any)?.secrets,
+    () => (readCtxService(ctx, 'cordis') as any)?.secrets,
+  ]
+  for (const probe of probes) {
+    let candidate: any
+    try { candidate = probe() } catch { continue }
     if (!candidate || typeof candidate !== 'object') continue
     if (['get', 'read', 'resolve', 'getSecret'].some((method) => typeof candidate[method] === 'function')) return candidate as SecretService
   }

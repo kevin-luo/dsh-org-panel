@@ -6,6 +6,7 @@
 //   2. Model Gateway    —— 多模型能力路由 + vision_analyze（没配模型就如实报错，绝不脑补图片）
 //   3. Plugin Runtime   —— 插件安装申请 / 人类审批 / 真实验证 / 技能证据
 //   4. Communication    —— 飞书 / QQ / 微信 外部渠道（未配置时安静降级）
+// 再加一条 /org-panel RPC 频道，把上面四层的真实台账直接送到浏览器里的设置中心。
 //
 // 铁律：同一份 evolution.json / company.json 只能有一个写入者。任何新增能力层都必须
 // 通过 core.store / core.company 复用实例，不允许自己 new 一个。
@@ -15,18 +16,37 @@ import { registerModelGateway, type ModelGateway } from './models/gateway'
 import { registerPluginRuntime, type PluginRuntimeHandle } from './capabilities/plugin-runtime'
 import { registerCommunication, type CommunicationManager } from './integrations/im/manager'
 import type { EmployeeDispatcher, RosterEntry } from './integrations/im/types'
+import { readEndpoints, type OrgPanelDeps } from './host/org-panel-read'
+import { writeEndpoints } from './host/org-panel-write'
+import { registerOrgPanelChannel, type OrgPanelChannelHandle } from './host/org-panel-rpc'
 import { companyEventBus } from './runtime/event-bus'
 import type { CompanyEvent } from './runtime/company-events'
 
 export const inject = coreInject
 
-/** 装配结果；便于宿主 / 测试拿到各层实例，运行时不依赖它。 */
-export type OrgPanelHost = {
+/** 装配好的四层实例。宿主与测试拿它做断言，运行时不依赖它。 */
+export type OrgPanelHostFields = {
   core: OrgPanelCore
   gateway?: ModelGateway
   plugins?: PluginRuntimeHandle | null
   communication?: CommunicationManager
+  /** /org-panel RPC 频道句柄；registered() === false 表示这套部署没有 httpServer/connection。 */
+  channel?: OrgPanelChannelHandle
 }
+
+/**
+ * apply() 的返回值。
+ *
+ * 为什么是「函数 + 属性」而不是普通对象：cordis 会把插件 apply() 的返回值当 **effect** 处理
+ * （lib/index.js 的 `_execute`：函数 → 当 disposer 收走；nullable → 忽略；thenable / iterable →
+ * 按序展开；**其余一律 `throw new TypeError('Invalid effect')`**）。
+ * 之前这里返回的是普通对象 `{core, gateway, …}`，于是每一次真实装载都让 fiber 直接进入失败态，
+ * 连带 /org-panel 频道、systemPrompt 段落全都不会生效 —— 这就是老板看到「模型 0 / 插件 0」的原因之一。
+ *
+ * 改成 dispose 函数之后：cordis 拿到的是一个合法 disposer（顺带把卸载清理补上了），
+ * 而 `assert.ok(host)`、`host.core`、`host.gateway` 这些既有用法一个字都不用改。
+ */
+export type OrgPanelHost = OrgPanelHostFields & (() => Promise<void>)
 
 function warn(ctx: any, layer: string, error: unknown): void {
   const detail = error instanceof Error ? error.message : String(error)
@@ -89,8 +109,15 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   registerCommunityMarket(ctx)
 
   // Company Event Bus：host 侧生产者（Plugin Runtime / 通讯层）统一往这里投真实事件。
-  // 挂到 ctx 上是为了让 registerCommunication 的 resolveEventSink 能自动发现它。
-  if (!ctx.companyEventBus) ctx.companyEventBus = companyEventBus
+  //
+  // 这里以前写的是 `if (!ctx.companyEventBus) ctx.companyEventBus = companyEventBus`。
+  // 在真实 cordis Context 上那是一句**必抛**的代码：读没 inject 过的自定义属性抛
+  // 「cannot get property "companyEventBus" without inject」，写没 provide 过的属性抛
+  // 「cannot set property … in multiple fibers」—— 读写两条路都堵死，没有任何部署形态能跑通。
+  // apply() 在这一行就中断，下面三层一层都挂不上，所以模型 / 插件审批 / 通讯
+  // 从来没有被写过一个字节（不是「写了但前端读不到」）。
+  // 现在改成显式传参（registerCommunication 的第三个参数），
+  // 顺带消掉「ctx 上鸭子类型自动发现」这个第二真相来源。
   companyEventBus.setEmployeeIds(core.employees.map((item) => item.id))
 
   let gateway: ModelGateway | undefined
@@ -121,7 +148,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
 
   let communication: CommunicationManager | undefined
   try {
-    communication = registerCommunication(ctx, config)
+    communication = registerCommunication(ctx, config, { events: companyEventBus })
     if (communication) {
       // 顺序要紧：先统一名册，再接员工运行时，最后外部消息才有真实的人可派。
       communication.setRoster(rosterOf(core.employees))
@@ -131,5 +158,25 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     warn(ctx, '外部通讯层', error)
   }
 
-  return { core, gateway, plugins, communication }
+  // /org-panel RPC 频道：把上面四层的真实状态直接送到浏览器里的设置中心。
+  // 无条件调用；没有 connection / httpServer 时它自己安静降级，绝不抛。
+  let channel: OrgPanelChannelHandle | undefined
+  try {
+    const deps: OrgPanelDeps = { core, gateway, plugins, communication, config }
+    channel = registerOrgPanelChannel(ctx, { ...readEndpoints(deps), ...writeEndpoints(deps) })
+  } catch (error) {
+    warn(ctx, '/org-panel RPC 频道', error)
+  }
+
+  // 返回值必须是 cordis 合法 effect（见 OrgPanelHost 的注释）：这是一个 dispose 函数，
+  // 四层实例挂在它的属性上。卸载时先撤 RPC 频道，避免热重载重复注册同一条 HTTP 路由。
+  const host = (async () => {
+    try { await channel?.dispose() } catch { /* 卸载失败不许拖住整个插件的卸载 */ }
+  }) as OrgPanelHost
+  host.core = core
+  host.gateway = gateway
+  host.plugins = plugins
+  host.communication = communication
+  host.channel = channel
+  return host
 }

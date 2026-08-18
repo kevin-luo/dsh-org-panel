@@ -8,6 +8,7 @@ import { installSettingsStyles } from './settings/styles'
 import { installProfileStyles } from './employee-profile/EmployeeProfile'
 import { companyEventBus } from '../runtime/event-bus'
 import { CompanyView } from './company-view'
+import { resolveOrgPanelRpc } from './rpc'
 
 // 与 client-v5 保持一致的部门映射，保证频道过滤与组织架构口径不变。
 const DEPARTMENT_BY_ROLE: Record<string, string> = {
@@ -62,6 +63,10 @@ export function apply(ctx: any, config?: OrgPanelConfig) {
   if (slots === undefined) return
   const timer = ctx && ctx.get ? ctx.get('timer') : undefined
   const inputTriggers = ctx && ctx.get ? ctx.get('inputTriggers') : undefined
+  // client→host 的 `/org-panel` 通道。DSH 的 connection 服务由 dsh-client-connection 提供
+  // （我们 inject 的 dsh-client-runtime 传递引入它），所以这里不改 package.json，也不 import 任何 DSH 包。
+  // 拿不到就是 null —— 面板安静降级回「会话 tool-result / 本机缓存」，行为与接 RPC 之前完全一致。
+  const rpc = resolveOrgPanelRpc(ctx)
   const normalized = normalizedConfig(config)
 
   // 三套样式各自幂等注入、互不覆盖：主布局 / 员工档案 / 公司设置中心。
@@ -94,6 +99,6 @@ export function apply(ctx: any, config?: OrgPanelConfig) {
 
   slots.inject('conversation.view', () => slots.register(
     { name: 'conversation.view', id: 'realm', order: 20, label: () => normalized.tabLabel },
-    (props: any) => createElement(CompanyView, Object.assign({}, props, { timer, config: normalized })),
+    (props: any) => createElement(CompanyView, Object.assign({}, props, { timer, config: normalized, rpc })),
   ))
 }

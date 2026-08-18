@@ -6,6 +6,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { EMPLOYEE_BLUEPRINTS, roleById } from '../../org-blueprints'
+import { firstCtxService, readCtxService } from '../../runtime/ctx-service'
 import { IMGateway, describeError } from './gateway'
 import { CompanyRouter } from './router'
 import { createFeishuAdapter, FeishuAdapter } from './adapters/feishu'
@@ -264,13 +265,31 @@ export function rosterFromConfig(config: any): RosterEntry[] {
 // DSH 挂载入口
 // ---------------------------------------------------------------------------
 
-/** 自动发现事件总线：ctx.companyEvents / ctx.companyEventBus，emit 与 publish 两种形态都认。 */
-function resolveEventSink(ctx: any): CommunicationEventSink | undefined {
-  const bus = ctx?.companyEvents || ctx?.companyEventBus
+/**
+ * 事件汇聚点的来源。
+ *
+ * 优先用 host-v3 **显式传进来**的那一个（options.events）—— 全公司只能有一个事件汇聚点，
+ * 显式传参是唯一不会产生第二真相来源的接法。
+ *
+ * 之前这里是「从 ctx 上鸭子类型自动发现」（ctx.companyEvents / ctx.companyEventBus）。
+ * 在真实 cordis Context 上那是一句必抛的代码：读没 provide 过的自定义属性会抛
+ * `cannot get property "companyEvents" without inject`，而且它在 try 块里，
+ * 结果就是 registerCommunication **必定返回 undefined** —— 与 communication 配置写没写无关。
+ * 现在保留的 ctx 探测只服务「单独挂载通讯层」的宿主，并且走 readCtxService，不会再抛。
+ */
+function resolveEventSink(ctx: any, explicit?: CommunicationEventSink | CompanyEventPublisher): CommunicationEventSink | undefined {
+  const bus: any = explicit || firstCtxService(ctx, ['companyEvents', 'companyEventBus'])
   if (!bus) return undefined
   if (typeof bus.emit === 'function') return bus as CommunicationEventSink
   if (typeof bus.publish === 'function') return createCompanyEventSink(bus as CompanyEventPublisher)
   return undefined
+}
+
+/** 宿主密钥服务：拿不到就返回 undefined，通讯层回落到只认 env: 引用。 */
+function resolveSecretReader(ctx: any): SecretResolver | undefined {
+  const service: any = readCtxService(ctx, 'secrets')
+  if (!service || typeof service.get !== 'function') return undefined
+  return (ref: SecretRef) => (ref.startsWith('env:') ? process.env[ref.slice(4)] : service.get(ref.slice(7)))
 }
 
 /**
@@ -291,8 +310,15 @@ function resolveEventSink(ctx: any): CommunicationEventSink | undefined {
  *     - { adapterId: feishu, externalConversationId: oc_xxx, companyChannelId: engineering }
  *
  * 未配置时安静降级：不连接、不报错，只注册一个只读状态工具供「公司设置 → 通讯」显示未连接。
+ *
+ * options.events 是**唯一推荐**的事件汇聚点接法（host-v3 会把公司事件总线显式传进来）；
+ * 第三个参数可选，既有的两参调用点与单测继续有效。
  */
-export function registerCommunication(ctx: any, config?: any): CommunicationManager | undefined {
+export function registerCommunication(
+  ctx: any,
+  config?: any,
+  options?: { events?: CommunicationEventSink | CompanyEventPublisher },
+): CommunicationManager | undefined {
   const logger: CommunicationLogger = { info: (text) => ctx?.logger?.info?.(text), warn: (text) => ctx?.logger?.warn?.(text), error: (text) => ctx?.logger?.error?.(text) }
   let manager: CommunicationManager
   try {
@@ -300,8 +326,8 @@ export function registerCommunication(ctx: any, config?: any): CommunicationMana
       config: normalizeCommunicationConfig(config?.communication),
       roster: rosterFromConfig(config),
       logger,
-      events: resolveEventSink(ctx),
-      resolveSecret: typeof ctx?.secrets?.get === 'function' ? (ref: SecretRef) => (ref.startsWith('env:') ? process.env[ref.slice(4)] : ctx.secrets.get(ref.slice(7))) : undefined,
+      events: resolveEventSink(ctx, options?.events),
+      resolveSecret: resolveSecretReader(ctx),
       attachmentDir: config?.attachmentDir ? String(config.attachmentDir) : undefined,
     })
   } catch (error) {

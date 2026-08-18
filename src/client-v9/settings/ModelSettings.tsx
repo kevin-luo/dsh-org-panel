@@ -39,10 +39,13 @@ export type ModelSettingsData = {
   employees?: ModelEmployeeRow[]
   /** Gateway.capabilityStatus 的结果：这项能力当前到底能不能用。 */
   capabilities?: Partial<Record<ModelCapability, { configured: boolean; providerIds?: string[] }>>
+  /** host 明确回答「Model Gateway 本次没挂上」时给的真实原因。有它就原样上屏，绝不显示成「一个都没配」。 */
+  reason?: string
   loaded?: boolean
 }
 
-export type ModelTestResult = { ok: boolean; message?: string; durationMs?: number }
+/** checked 区分「真的发过一次请求」和「只核对了配置与密钥」；后者绝不许说成「连接成功」。 */
+export type ModelTestResult = { ok: boolean; message?: string; durationMs?: number; checked?: 'config-only' | 'live-call' }
 
 export type ModelSettingsActions = {
   test?(providerId: string): unknown | Promise<unknown>
@@ -67,7 +70,9 @@ function testMessage(value: unknown): string {
   if (result && typeof result === 'object' && typeof result.ok === 'boolean') {
     const suffix = typeof result.durationMs === 'number' ? ` · ${Math.round(result.durationMs)}ms` : ''
     if (!result.ok) throw new Error(result.message || '连接失败')
-    return `${result.message || '连接成功'}${suffix}`
+    // host 没给文案时的兜底也必须分清楚：config-only 只是配置核对通过，不代表这个模型真的能用。
+    const fallback = result.checked === 'config-only' ? '只核对了配置与密钥，没有发真实请求' : '连接成功'
+    return `${result.message || fallback}${suffix}`
   }
   return '连接成功'
 }
@@ -119,8 +124,15 @@ export function ModelSettings(props: { data?: ModelSettingsData; actions?: Model
   }, [providers])
 
   return h('div', { className: 'cy9-set-main' },
-    !data?.loaded && !providers.length
-      ? h('div', { className: 'cy9-set-banner info' }, '尚未读到模型配置。供应商写在 ~/.dsh-org-panel/company.json 的 modelProviders 中，apiKeyRef 只能是 env: / secret: 引用。')
+    // 「已加载但一个都没有」同样是空态，也必须给下一步 ——
+    // 老板打开这一页看到「模型 0」时，最需要的就是知道去哪儿配、配什么。
+    !providers.length
+      ? h('div', { className: data?.reason ? 'cy9-set-banner' : 'cy9-set-banner info' }, data?.reason
+        // host 说了为什么读不到（例如 Model Gateway 根本没挂上）：那就不是「你没配」，别让老板去改配置文件。
+        ? `面板没有拿到模型供应商清单 —— host 的原话：${data.reason}`
+        : data?.loaded
+          ? '公司还没有配置任何模型供应商，员工只能用 DSH 默认模型，识图 / 生图这些能力现在都不可用。下一步：在 ~/.dsh-org-panel/company.json 的 modelProviders 里加一个文本供应商（apiKeyRef 只能写 env: / secret: 引用），重启后回到这一页确认它出现在「文本模型」下。'
+          : '尚未读到模型配置。供应商写在 ~/.dsh-org-panel/company.json 的 modelProviders 中，apiKeyRef 只能是 env: / secret: 引用。')
       : null,
     GROUPS.map((group) => {
       const rows = grouped.get(group.type) || []

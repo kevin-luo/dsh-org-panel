@@ -10,11 +10,15 @@ import { CollaborationPanel } from './components/CollaborationPanel'
 import { RightRail } from './components/RightRail'
 import { EmployeeProfile } from './employee-profile/EmployeeProfile'
 import { CompanySettings, settingsDataFromSnapshot } from './settings/CompanySettings'
-import { REFRESH_PROMPT, REFRESH_RESULT, useCompanyHydration, useSessionEventChannel } from './company-bridge'
+import { buildSettingsActions, REFRESH_PROMPT, REFRESH_RESULT, SOURCE_LABEL, useOrgPanel, useSessionEventChannel } from './company-bridge'
+import type { OrgPanelRpc } from './rpc'
 
 export function CompanyView(props: any) {
   const useSession = props?.useSession
   const inputActions = props?.inputActions
+  // client→host 的 `/org-panel` 调用器（client-v9/index.tsx 从 ctx.get('connection') 取）。
+  // 没有就是 null：所有写操作不下发，设置页照旧禁用并说明原因。
+  const rpc: OrgPanelRpc | null = props?.rpc || null
   const config: OrgPanelConfig = props?.config || {}
   const staff = config.staff || []
   const roles = config.roles || []
@@ -51,8 +55,9 @@ export function CompanyView(props: any) {
   const plugins = useMemo(() => extractMarketPlugins(nodes), [nodes])
   // 会话节点流 → Company Event Bus：办公室 / 右栏 / 员工档案统一从总线读实时状态。
   useSessionEventChannel(nodes, runningCalls, roles, staff)
-  // 持久化快照 hydrate：本 Session 跑过 company_snapshot 就用它，否则用上次缓存的同一份真实数据。
-  const { snapshot } = useCompanyHydration(nodes)
+  // 持久化快照 hydrate + 设置中心数据，三级优先级：`/org-panel` RPC > 本 Session 快照 > 本机缓存。
+  const orgPanel = useOrgPanel(nodes, rpc, settingsOpen)
+  const snapshot = orgPanel.snapshot
   const typingStaff = useMemo(() => partial ? latestDirectEmployee(nodes, staff) : null, [partial, nodes, staff])
   const counts = useMemo(() => {
     let runningCount = 0, doneCount = 0, waitCount = 0, idleCount = 0
@@ -69,30 +74,48 @@ export function CompanyView(props: any) {
 
   // 全局唯一的「插入 @员工」出口：只写 DSH 官方草稿（InputActions.setDraft），再把焦点交还原生 Composer。
   // 绝不调用 submit —— 发不发、怎么改，由老板在原生输入框里决定。
-  const draftComposer = (text: string) => {
+  // focus=false 用于弹窗还开着的场景：把焦点移到弹窗背后的 textarea 会让老板以为界面卡了。
+  const draftComposer = (text: string, focus = true) => {
     setChatCollapsed(false)
     const actions: any = inputActions
     if (actions && typeof actions.setDraft === 'function') {
       try { actions.setDraft(text) } catch { /* 草稿写入失败时也照样聚焦，让老板自己补内容 */ }
     }
+    if (!focus) return
     // 只读定位原生 Composer 的 textarea（seat 是赛博公司 Tab 的同级兄弟节点），不做任何 DOM 搬运。
     window.requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>('[data-composer-seat] textarea')?.focus())
   }
   const toggleStaff = (staffId: string) => setActiveStaffId((current) => current === staffId ? null : staffId)
   const profileStaff = profileId ? staff.find((item) => item.id === profileId) || null : null
 
-  // 设置中心数据：全部来自真实快照 + 本会话真实搜索到的市场插件。
-  // 没有 host 写通道的那些能力（测试连接 / 审批 / 导出备份）不传 action，
+  // 设置中心数据：真实快照 + `/org-panel` 读回来的真实台账 + 本会话真实搜索到的市场插件。
+  // 依然没有写通道的那些能力（测试连接 / 导出备份 / 渠道启停）不传 action，
   // CompanySettings 会把按钮禁用并在 title 里说明原因，绝不假装成功。
-  const settingsData = useMemo(() => settingsDataFromSnapshot(snapshot, {
+  // 数据来源必须上屏：降级了就说降级了，别让老板对着一屏「未知」自己猜原因。
+  const sourceText = orgPanel.channel === 'offline'
+    ? `${SOURCE_LABEL[orgPanel.source]} · host 未提供 /org-panel 频道，面板读不到实时台账`
+    : orgPanel.source === 'none' ? undefined : SOURCE_LABEL[orgPanel.source]
+  const settingsData = useMemo(() => settingsDataFromSnapshot(snapshot, Object.assign({}, orgPanel.extra, {
     companyName: config.companyName,
-    plugins: { market: plugins },
-  }), [snapshot, plugins, config.companyName])
+    source: sourceText,
+    loading: orgPanel.loading,
+    error: orgPanel.error,
+    plugins: Object.assign({ market: plugins, channelProbing: orgPanel.channel === 'unknown' }, orgPanel.extra.plugins),
+  })), [snapshot, plugins, config.companyName, sourceText, orgPanel.extra, orgPanel.loading, orgPanel.error, orgPanel.channel])
   // 不用 useMemo：draftComposer 每次渲染都会重建，缓存住会闭包到旧的 inputActions。
-  const settingsActions = {
-    refresh: () => { draftComposer(REFRESH_PROMPT); return REFRESH_RESULT },
-    employees: { openProfile: (employeeId: string) => { setSettingsOpen(false); setProfileId(employeeId) } },
-  }
+  const settingsActions = buildSettingsActions({
+    channel: orgPanel.channel,
+    rpc,
+    // 刷新优先走 RPC；通道不通时退回「把指令写进原生 Composer 草稿」这条老路，
+    // 并如实说明为什么走了降级路径。弹窗开着，所以不抢焦点。
+    refresh: async () => {
+      const result = await orgPanel.refresh()
+      if (result.ok) return result.message
+      draftComposer(REFRESH_PROMPT, false)
+      return `${result.message}${REFRESH_RESULT}`
+    },
+    openProfile: (employeeId: string) => { setSettingsOpen(false); setProfileId(employeeId) },
+  })
   const stats = { total: staff.length, online: staff.length - counts.idle, running: counts.running, done: counts.done, wait: counts.wait, idle: counts.idle, since }
 
   return h('div', { className: 'cy9' },

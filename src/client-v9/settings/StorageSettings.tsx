@@ -4,7 +4,8 @@
 import { createElement as h, useState } from 'react'
 import { ActionButton, DASH, Empty, KeyValues, SettingsCard, SettingsRow, countText, formatBytes, formatDateTime } from './styles'
 
-export type StorageFileRow = { label: string; path: string; bytes?: number; updatedAt?: number; exists?: boolean }
+/** error = host 读这个文件时真的报错了（权限等）。有 error 时绝不显示成「尚未创建」。 */
+export type StorageFileRow = { label: string; path: string; bytes?: number; updatedAt?: number; exists?: boolean; error?: string }
 
 export type StorageSettingsData = {
   /** 数据根目录，默认 ~/.dsh-org-panel/。 */
@@ -78,7 +79,9 @@ export function StorageSettings(props: { data?: StorageSettingsData; actions?: S
         ? data.files.map((row) => h(SettingsRow, {
           key: row.path,
           title: row.label,
-          desc: `${row.path} · ${row.exists === false ? '尚未创建' : formatBytes(row.bytes)} · 更新 ${formatDateTime(row.updatedAt)}`,
+          desc: row.error
+            ? `${row.path} · 读取失败：${row.error}`
+            : `${row.path} · ${row.exists === false ? '尚未创建' : formatBytes(row.bytes)} · 更新 ${formatDateTime(row.updatedAt)}`,
           side: h(ActionButton, { label: '复制路径', run: () => copyText(row.path) }),
         }))
         : h(Empty, { text: '尚未读到数据文件信息。' }),

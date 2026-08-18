@@ -1,22 +1,33 @@
-// 「赛博公司」client 侧 host↔UI 桥接层（集成 Phase）。
+// 「赛博公司」client 侧 host↔UI 桥接层。
 //
 // 解决需求文档 2.1 点名的 bug：打开一个全新的空 Session 时，工作台不能只剩本 Session 的
 // Tool Event，必须能显示真实的历史成长数据（等级 / 经验 / 技能 / 插件 / 履历）。
 //
-// 现实约束（已实读 @deepseek-ai/dsh-client-ui-conversation 的 slot 契约）：
-//   conversation.view 拿到的 props 只有 useSession / inputActions / renderSlots 等，
-//   **DSH 这一版没有给插件 client→host 的 RPC 通道**，client 无法主动调用 host 工具。
-// 因此 hydrate 只有两条真实来源，本文件把它们接起来，一条都不伪造：
-//   A. 本 Session 里 company_snapshot 工具真实跑过 → 从 tool-result 节点解析（权威、最新）。
-//   B. 上一次 A 命中时写进 localStorage 的同一份快照 → 空 Session 冷启动时先用它，
-//      UI 上以 snapshot.generatedAt 如实标注「数据时间」，不假装它是此刻的状态。
-// 两者都没有 → 交出 null，各个面板显示 0 / — / 暂无（文档四十八条），绝不编造数字。
-import { useEffect, useMemo } from 'react'
+// 【本文件此前基于一个错误前提】旧注释断言浏览器这一侧压根没办法主动调 host。
+// 那个结论来自只读了 @deepseek-ai/dsh-client-ui-conversation，没查 dsh-client-connection，是错的。
+// 实读源码后确认：client 侧 cordis Context 上有 `connection` 服务，`connection.rpc` 就是
+// `createWebConnectionRpc()`，可以直接调 host 注册的 `/org-panel` 频道（详见 ./rpc.ts 的实读记录）。
+//
+// 所以 hydrate 现在有三条真实来源，本文件按**显式优先级**把它们接起来，一条都不伪造：
+//   A. `/org-panel` RPC 实时读取（权威、此刻的真实状态，且空 Session 也能拿到）；
+//   B. 本 Session 里 company_snapshot 工具真实跑过 → 从 tool-result 节点解析；
+//   C. 上一次 A/B 命中时写进 localStorage 的同一份快照 → 冷启动兜底。
+// 每一级都带来源标记并上屏（SOURCE_LABEL），不允许「悄悄降级」。
+// 三者都没有 → 交出 null，各个面板显示 0 / — / 暂无 / 未知（文档四十八条），绝不编造数字。
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CompanySnapshot } from '../persistence/types'
+import type { InstallRequest } from '../capabilities/plugin-runtime'
 import type { RoleDef, StaffDef } from './types'
+import type { CompanySettingsActions, CompanySettingsData } from './settings/CompanySettings'
+import type { ModelSettingsData } from './settings/ModelSettings'
+import type { PluginSettingsData } from './settings/PluginSettings'
+import type { CommunicationSettingsData } from './settings/CommunicationSettings'
+import type { SecuritySettingsData } from './settings/SecuritySettings'
+import type { StorageSettingsData } from './settings/StorageSettings'
 import { applyCompanySnapshot, readCompanySnapshot, setCompanySnapshot, useCompanySnapshot } from './employee-profile/EmployeeProfile'
 import { deriveCompanyEvents } from './selectors'
 import { companyEventBus, SESSION_CHANNEL } from '../runtime/event-bus'
+import { callOrgPanel, orgPanelWrite, outcomeMessage, type OrgPanelRpc, type RpcOutcome } from './rpc'
 
 /** host 侧 host-v2.ts 注册的快照工具名。改名必须两边一起改。 */
 export const SNAPSHOT_TOOL = 'company_snapshot'
@@ -97,34 +108,274 @@ export function extractCompanySnapshot(nodes: any[]): CompanySnapshot | null {
   return latest
 }
 
+// ---------------------------------------------------------------------------
+// 数据来源标记：UI 必须如实告诉老板他看的这一屏是从哪儿来的
+// ---------------------------------------------------------------------------
+
+export type SnapshotSource = 'rpc' | 'session' | 'cache' | 'none'
+
+export const SOURCE_LABEL: Record<SnapshotSource, string> = {
+  rpc: '数据来自 host 实时读取（/org-panel）',
+  session: '数据来自本会话的 company_snapshot 结果',
+  cache: '数据来自本机缓存的上一份快照',
+  none: '尚未取到任何真实数据',
+}
+
+/** RPC 通道的真实状态。unknown 表示「还没探测过」——那种时候一个字都不许下结论。 */
+export type OrgPanelChannelState = 'unknown' | 'online' | 'offline'
+
 export type CompanyHydration = {
   snapshot: CompanySnapshot | null
-  /** true 表示当前这份来自 localStorage 缓存，而不是本 Session 刚跑出来的。 */
+  source: SnapshotSource
+  /** 兼容旧口径：true 表示当前这份来自 localStorage 缓存，而不是刚从 host / 本会话拿到的。 */
   cached: boolean
 }
 
-/**
- * hydrate 主入口：会话里有新快照就用新的并写缓存，没有就用缓存兜底。
- * 结果同时推进 employee-profile 的全局 store，OfficeWorld / RightRail / 员工档案 / 设置中心
- * 都通过 useCompanySnapshot() 自动拿到同一份数据，不需要各自传 prop。
- */
-export function useCompanyHydration(nodes: any[]): CompanyHydration {
-  const fromSession = useMemo(() => extractCompanySnapshot(nodes), [nodes])
+// ---------------------------------------------------------------------------
+// `/org-panel` 只读端点
+// ---------------------------------------------------------------------------
 
+/** 与 host 侧 src/host/org-panel-read.ts 的 readEndpoints() 一一对应。 */
+export const READ_ENDPOINTS = {
+  snapshot: 'company/snapshot',
+  approvals: 'plugins/approvals',
+  health: 'plugins/health',
+  communication: 'communication/summary',
+  security: 'security/policy',
+  models: 'models/providers',
+  storage: 'storage/inventory',
+} as const
+
+/** 与 host 侧 src/host/org-panel-write.ts 的 writeEndpoints() 一一对应。全部是人类点击才会触发的动作。 */
+export const WRITE_ENDPOINTS = {
+  approve: 'plugins/approve',
+  reject: 'plugins/reject',
+  verify: 'plugins/verify',
+  healthCheck: 'plugins/healthCheck',
+  modelTest: 'models/test',
+  modelSetEnabled: 'models/setEnabled',
+  modelBind: 'models/bind',
+} as const
+
+type ConsoleFetch = {
+  snapshot: CompanySnapshot | null
+  extra: CompanySettingsData
+  channel: 'online' | 'offline'
+  note: string
+  errors: string[]
+}
+
+/**
+ * host 的只读端点用 `{ available:false, reason }` 表示「这一项本次运行根本拿不到」
+ * （比如插件运行时没挂上、Model Gateway 没挂上、cordis 里没有 communication 段）。
+ *
+ * 这跟「拿到了、结果是空」是两件完全不同的事，绝不能合并：
+ * 前者必须把 host 给的真实原因原样显示，后者才配说「暂无」。
+ * 合并的后果就是老板看到一句「未配置飞书」，而事实是通讯层压根没启动过。
+ */
+type Answer<T> = { value: T | null; reason: string }
+
+function answerOf<T>(outcome: RpcOutcome<unknown>): Answer<T> {
+  if (outcome.state !== 'ok') return { value: null, reason: outcome.state === 'unavailable' ? '' : outcomeMessage(outcome) }
+  const value = outcome.value as any
+  if (!value || typeof value !== 'object') return { value: (value ?? null) as T, reason: '' }
+  if (value.available === false) return { value: null, reason: String(value.reason || 'host 说本次运行拿不到这一项，但没有给出原因。') }
+  return { value: value as T, reason: '' }
+}
+
+/**
+ * 一次把六个只读端点全拉回来。每个端点各自成败互不影响：
+ * 拉到什么就显示什么，拉不到的那一块继续显示「未读取 / 未知」，绝不用别处的数据顶上。
+ */
+export async function fetchOrgPanel(rpc: OrgPanelRpc, signal?: AbortSignal): Promise<ConsoleFetch> {
+  const [snapshot, approvals, health, communication, security, models, storageInfo] = await Promise.all([
+    callOrgPanel<CompanySnapshot>(rpc, READ_ENDPOINTS.snapshot, {}, signal),
+    callOrgPanel<InstallRequest[]>(rpc, READ_ENDPOINTS.approvals, {}, signal),
+    callOrgPanel<PluginSettingsData['health']>(rpc, READ_ENDPOINTS.health, {}, signal),
+    callOrgPanel<CommunicationSettingsData>(rpc, READ_ENDPOINTS.communication, {}, signal),
+    callOrgPanel<SecuritySettingsData>(rpc, READ_ENDPOINTS.security, {}, signal),
+    callOrgPanel<unknown>(rpc, READ_ENDPOINTS.models, {}, signal),
+    callOrgPanel<StorageSettingsData>(rpc, READ_ENDPOINTS.storage, {}, signal),
+  ])
+  const outcomes: Array<[string, RpcOutcome<unknown>]> = [
+    [READ_ENDPOINTS.snapshot, snapshot], [READ_ENDPOINTS.approvals, approvals], [READ_ENDPOINTS.health, health],
+    [READ_ENDPOINTS.communication, communication], [READ_ENDPOINTS.security, security],
+    [READ_ENDPOINTS.models, models], [READ_ENDPOINTS.storage, storageInfo],
+  ]
+  // 全部 unavailable 才算通道不通；只要有一个端点真的应答过，通道就是活的，剩下的失败按端点错误报。
+  // 被取消的那些不算「应答过」—— 拿一次主动 abort 当「通道是通的」证据是自欺。
+  const answered = outcomes.filter(([, outcome]) => outcome.state !== 'unavailable' && !(outcome.state === 'error' && outcome.code === 'aborted'))
+  const channel: 'online' | 'offline' = answered.length ? 'online' : 'offline'
+  const note = channel === 'offline'
+    ? (outcomes[0][1].state === 'unavailable' ? outcomes[0][1].message : '')
+    : ''
+  const errors = answered
+    .filter(([, outcome]) => outcome.state === 'error' && outcome.code !== 'aborted')
+    .map(([endpoint, outcome]) => `${endpoint}：${outcomeMessage(outcome)}`)
+
+  const extra: CompanySettingsData = {}
+
+  // --- 插件：审批台账 + 健康检查（同属 plugins 段，合并成一个对象） -------------
+  const approvalsAnswer = answerOf<{ requests?: InstallRequest[] } | InstallRequest[]>(approvals)
+  const healthAnswer = answerOf<NonNullable<PluginSettingsData['health']>>(health)
+  const pluginSection: PluginSettingsData = {}
+  const requests = Array.isArray(approvalsAnswer.value)
+    ? approvalsAnswer.value
+    : Array.isArray(approvalsAnswer.value?.requests) ? approvalsAnswer.value!.requests : null
+  if (requests) pluginSection.approvals = requests
+  if (healthAnswer.value) {
+    pluginSection.health = {
+      checkedAt: healthAnswer.value.checkedAt,
+      catalogSize: healthAnswer.value.catalogSize,
+      changed: healthAnswer.value.changed,
+    }
+  }
+  const pluginReason = approvalsAnswer.reason || healthAnswer.reason
+  if (pluginReason) pluginSection.reason = pluginReason
+  if (Object.keys(pluginSection).length) extra.plugins = pluginSection
+
+  // --- 通讯：available:false 时**不**下发空 adapters 数组 ----------------------
+  // 那会让通讯页把「没启动过」显示成「未配置」，是两件事。
+  const commAnswer = answerOf<CommunicationSettingsData>(communication)
+  if (commAnswer.value) extra.communication = Object.assign({}, commAnswer.value, { loaded: true })
+  else if (commAnswer.reason) extra.communication = { reason: commAnswer.reason }
+
+  const securityAnswer = answerOf<SecuritySettingsData>(security)
+  if (securityAnswer.value) extra.security = Object.assign({}, securityAnswer.value, { loaded: true })
+
+  // --- 模型：同理，Gateway 没挂上时不能显示成「一个供应商都没配」 ---------------
+  const modelAnswer = answerOf<ModelSettingsData>(models)
+  if (modelAnswer.value) extra.models = Object.assign({}, modelAnswer.value, { loaded: true })
+  else if (modelAnswer.reason) extra.models = { reason: modelAnswer.reason }
+
+  // --- 存储：真实路径 / 字节 / mtime，外加快照统计 -----------------------------
+  const storageAnswer = answerOf<StorageSettingsData & { totals?: Record<string, number> }>(storageInfo)
+  if (storageAnswer.value) {
+    const totals = storageAnswer.value.totals || {}
+    extra.storage = Object.assign({}, storageAnswer.value, {
+      loaded: true,
+      employees: totals.employees,
+      memories: totals.memories,
+      tasks: totals.tasks,
+      skills: totals.skills,
+    })
+  }
+  return {
+    snapshot: snapshot.state === 'ok' && isSnapshot(snapshot.value) ? snapshot.value : null,
+    extra,
+    channel,
+    note,
+    errors,
+  }
+}
+
+export type OrgPanelConsole = CompanyHydration & {
+  channel: OrgPanelChannelState
+  /** 通道不可用时的真实原因原文（含 host 的错误信息），要能直接上屏。 */
+  channelNote: string
+  /** 六个设置页的增量数据：审批台账 / 健康检查 / 通讯摘要 / 安全策略 / 模型供应商 / 存储清单。 */
+  extra: CompanySettingsData
+  loading: boolean
+  error: string | null
+  /** 手动刷新。ok=false 时 message 说明为什么走不通，调用方据此走降级路径。 */
+  refresh(): Promise<{ ok: boolean; message: string }>
+}
+
+const EMPTY_EXTRA: CompanySettingsData = {}
+
+/**
+ * hydrate + 设置中心数据的唯一入口。
+ *
+ * 时序：挂载即探测一次 `/org-panel`（顺带把快照拉回来，空 Session 也有历史数据）；
+ * 打开设置中心时再拉一次拿最新台账；老板点「刷新」再拉一次。
+ * 通道不通时**一次都不重试**，安静走会话 / 缓存那两级，行为与接 RPC 之前完全一致。
+ */
+export function useOrgPanel(nodes: any[], rpc: OrgPanelRpc | null | undefined, settingsOpen: boolean): OrgPanelConsole {
+  const fromSession = useMemo(() => extractCompanySnapshot(nodes), [nodes])
+  const [remote, setRemote] = useState<{ snapshot: CompanySnapshot | null; extra: CompanySettingsData }>({ snapshot: null, extra: EMPTY_EXTRA })
+  const [channel, setChannel] = useState<OrgPanelChannelState>('unknown')
+  const [channelNote, setChannelNote] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const alive = useRef(true)
+  // 进场时显式置回 true：StrictMode 的双调用会先跑一次 cleanup，只写 cleanup 会把自己永久关掉。
+  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+
+  const pull = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
+    if (!rpc) {
+      if (alive.current) { setChannel('offline'); setChannelNote('') }
+      return { ok: false, message: '当前运行时没有 client↔host 通道。' }
+    }
+    if (alive.current) setLoading(true)
+    try {
+      const result = await fetchOrgPanel(rpc)
+      if (!alive.current) return { ok: result.channel === 'online', message: '' }
+      setChannel(result.channel)
+      setChannelNote(result.note)
+      setError(result.errors.length ? result.errors.join('；') : null)
+      if (result.channel === 'offline') return { ok: false, message: `${result.note || '/org-panel 频道没有应答。'}` }
+      setRemote({ snapshot: result.snapshot, extra: result.extra })
+      if (result.snapshot) writeCachedSnapshot(result.snapshot)
+      const at = result.snapshot ? new Date(result.snapshot.generatedAt).toLocaleString('zh-CN', { hour12: false }) : ''
+      return {
+        ok: true,
+        message: result.errors.length
+          ? `已从 host 读取，但有端点失败：${result.errors.join('；')}`
+          : `已从 host 读取真实数据${at ? ` · 快照时间 ${at}` : ''}`,
+      }
+    } finally {
+      if (alive.current) setLoading(false)
+    }
+  }, [rpc])
+
+  // 依赖只用**标量**（快照生成时间），不用对象引用。
+  // extractCompanySnapshot 每次都 JSON.parse 出一个新对象，拿它当 effect 依赖 =
+  // 只要 nodes 的引用不稳，就会「取数 → setState → 重渲染 → 再取数」无限打 host。
+  const sessionAt = fromSession ? fromSession.generatedAt : 0
+  // 挂载即探测一次：空 Session 打开工作台就该有历史数据，不必先等 LLM 跑一次工具。
+  // 会话里又跑出新快照时也重拉一次 —— host 侧状态多半跟着变了，不能让旧的 RPC 结果压住新的。
+  useEffect(() => { void pull() }, [pull, sessionAt])
+  // 打开设置中心时再拉一次：审批台账 / 健康检查这些东西过一分钟就可能变。
+  // settingsOpen 初值是 false，所以这条不会在挂载时跟上面那条重复触发。
+  useEffect(() => { if (settingsOpen) void pull() }, [settingsOpen, pull])
+
+  // 三级优先级，顺序在这里显式可读：RPC 快照 > 本 Session tool-result > localStorage 缓存。
+  const chosen: { snapshot: CompanySnapshot | null; source: SnapshotSource } = remote.snapshot
+    ? { snapshot: remote.snapshot, source: 'rpc' }
+    : fromSession
+      ? { snapshot: fromSession, source: 'session' }
+      : { snapshot: null, source: 'none' }
+
+  // 同上，依赖用标量：generatedAt 一样就是同一份快照，没必要（也不能）反复推进全局 store。
+  const chosenAt = chosen.snapshot ? chosen.snapshot.generatedAt : 0
   useEffect(() => {
-    if (fromSession) {
-      setCompanySnapshot(fromSession)
-      writeCachedSnapshot(fromSession)
+    if (chosen.snapshot) {
+      setCompanySnapshot(chosen.snapshot)
+      if (chosen.source === 'session') writeCachedSnapshot(chosen.snapshot)
       return
     }
-    // 会话里还没有快照：只在全局 store 为空时用缓存冷启动，绝不覆盖已有的新数据。
+    // 前两级都没有：只在全局 store 为空时用缓存冷启动，绝不覆盖已有的新数据。
     if (readCompanySnapshot()) return
     const cached = readCachedSnapshot()
     if (cached) applyCompanySnapshot(cached)
-  }, [fromSession])
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- chosen.snapshot 的身份不稳，靠 chosenAt 定身份
+  }, [chosenAt, chosen.source])
 
   const snapshot = useCompanySnapshot()
-  return { snapshot, cached: !!snapshot && !fromSession }
+  // 来源标记必须跟着实际渲染的那一份走：前两级都空、屏幕上却有数据，那份就只可能来自本机缓存。
+  const source: SnapshotSource = chosen.snapshot ? chosen.source : snapshot ? 'cache' : 'none'
+
+  return {
+    snapshot,
+    source,
+    cached: source === 'cache',
+    channel,
+    channelNote,
+    extra: remote.extra,
+    loading,
+    error,
+    refresh: pull,
+  }
 }
 
 /**
@@ -144,7 +395,49 @@ export function useSessionEventChannel(nodes: any[], runningCalls: any[], roles:
 }
 
 /**
- * 「刷新公司数据」：client 没有 RPC，唯一诚实的做法是把指令写进原生 Composer 草稿，
+ * 设置中心的 action 表。
+ *
+ * 规则只有一条：**能真正做到的才给 action**。给了 action 按钮就是真的能点；
+ * 没给的那些，六个设置页会把控件禁用并在 title 里说明原因（绝不摆一个假装能用的按钮）。
+ *
+ * 安全边界（铁律四）：这里的 approve / reject 是把**老板的这一次点击**送到 host，
+ * 审批语义一个字都没放宽 —— host 侧 PluginRuntime.approve 的调用方仍然只有 UI / CLI / 预批准配置，
+ * LLM 手上只有 Tool Registry，够不到 ctx.connection，永远走不到这条路。
+ */
+export function buildSettingsActions(options: {
+  channel: OrgPanelChannelState
+  rpc?: OrgPanelRpc | null
+  refresh(): unknown | Promise<unknown>
+  openProfile(employeeId: string): void
+}): CompanySettingsActions {
+  const { channel, rpc, refresh, openProfile } = options
+  const actions: CompanySettingsActions = {
+    refresh: () => refresh(),
+    employees: { openProfile },
+  }
+  // 通道没通（或还没探明）时一个写操作都不给：宁可让老板看到「此处无法审批」，也不给他一个点了没反应的按钮。
+  if (channel !== 'online' || !rpc) return actions
+  actions.plugins = {
+    approve: (requestId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.approve, { requestId }),
+    reject: (requestId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.reject, { requestId }),
+    verify: (requestId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.verify, { requestId }),
+    healthCheck: () => orgPanelWrite(rpc, WRITE_ENDPOINTS.healthCheck, {}),
+  }
+  actions.models = {
+    // live 由 host 决定发不发真实请求，返回里的 checked 会如实区分；面板不许把 config-only 说成「已连通」。
+    test: (providerId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelTest, { providerId }),
+    setEnabled: (providerId: string, enabled: boolean) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelSetEnabled, { providerId, enabled }),
+    // providerId 为 null = 解绑；host 侧按空串处理成 unbindModel。
+    bind: (employeeId: string, capability: string, providerId: string | null) =>
+      orgPanelWrite(rpc, WRITE_ENDPOINTS.modelBind, { employeeId, capability, providerId: providerId || '' }),
+  }
+  // setDefault 故意不给：host 侧没有对应端点，给了就是一个点下去必然报错的按钮。
+  // 模型页会把它禁用并在 title 里说明原因 —— 这正是「有 action 就能点、没有就诚实说明」的用法。
+  return actions
+}
+
+/**
+ * 「刷新公司数据」的降级路径：`/org-panel` 不可用时，唯一诚实的做法是把指令写进原生 Composer 草稿，
  * 由老板自己按回车。绝不自动提交，也不假装已经刷新成功。
  */
 export const REFRESH_PROMPT = '调用 company_snapshot 读取赛博公司当前的完整持久化状态，然后用一句话概括即可。'

@@ -13,6 +13,7 @@ import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { EMPLOYEE_BLUEPRINTS } from '../org-blueprints'
 import { EvolutionStore } from '../persistence/evolution-store'
+import { readCtxService } from '../runtime/ctx-service'
 import type { PluginBinding, PluginSource, PluginStatus } from '../persistence/types'
 import {
   INTERNAL_TOOL_NAMES, findCommandExecutor, invokeTool, newCapabilities, scanToolRegistry, stringifyToolValue, toolNameSet,
@@ -685,12 +686,20 @@ export class PluginRuntime {
    * 1. 宿主必须**显式声明**这个通道是人类审批（isHumanApproval / kind:'human-approval' 之类的标记），
    *    没声明的对象一律不问；
    * 2. 返回值必须是结构化对象，回带本次 requestId 并给出人类操作者。裸 true / 'approved' / 空对象一律不算。
+   *
+   * 为什么本轮**没有删掉它**：赛博公司现在确实有了真实的人类审批通道（/org-panel RPC 频道 →
+   * 老板在「公司设置 → 插件」点击批准），但那条通道要求宿主同时提供 httpServer + connection。
+   * 不满足的部署形态下，宿主自带的原生审批弹窗仍然是唯一可能的人类通道。
+   * 它默认关闭、且两道自证门槛不动，保留它不放宽任何审批语义。
+   *
+   * 探测本身必须 crash-safe：真实 cordis Context 上直接读 `ctx.approvals` 会抛
+   * `cannot get property "approvals" without inject`，所以一律走 readCtxService。
    */
   private async askHostApproval(request: InstallRequest): Promise<ApprovalDecision | null> {
     if (this.config.pluginInstall?.probeHostApproval !== true) return null
     const owners: Array<[any, string]> = [
-      [this.ctx?.approvals, 'request'], [this.ctx?.approval, 'request'],
-      [this.ctx?.permissions, 'request'], [this.ctx?.permission, 'request'],
+      [readCtxService(this.ctx, 'approvals'), 'request'], [readCtxService(this.ctx, 'approval'), 'request'],
+      [readCtxService(this.ctx, 'permissions'), 'request'], [readCtxService(this.ctx, 'permission'), 'request'],
     ]
     const payload = {
       kind: 'plugin-install',
@@ -948,6 +957,13 @@ export class PluginRuntime {
    * 绑定里的工具全在 = available，部分在 = degraded，全不在 = missing。
    * 技能历史一律保留，只更新可用性；手动 disabled 的绑定不自动翻转。
    */
+  /**
+   * 最近一次真实跑过的健康检查结果。
+   * 从来没跑过就是 null —— 设置页会显示「未检查」，不会拿 catalog 大小冒充一次检查。
+   */
+  lastHealthReport(): HealthReport | null { return this.lastReport }
+  private lastReport: HealthReport | null = null
+
   async healthCheck(employeeIds?: string[]): Promise<HealthReport> {
     const catalog = await scanToolRegistry(this.tools, { includeInternal: true })
     const present = new Set(catalog.map((item) => item.name))
@@ -974,6 +990,7 @@ export class PluginRuntime {
       }
       report.employees.push({ employeeId, plugins: rows })
     }
+    this.lastReport = report
     return report
   }
 
@@ -1042,8 +1059,12 @@ export type PluginRuntimeHandle = {
   approve: PluginRuntime['approve']
   reject: PluginRuntime['reject']
   install: PluginRuntime['install']
+  verifyRequest: PluginRuntime['verifyRequest']
   verifyBinding: PluginRuntime['verifyBinding']
   healthCheck: PluginRuntime['healthCheck']
+  /** 最近一次真实健康检查的结果；没跑过就是 null。只读，不会顺手替 UI 触发一次检查。 */
+  lastHealthReport: PluginRuntime['lastHealthReport']
+  catalog: PluginRuntime['catalog']
   recordEvidence: PluginRuntime['recordEvidence']
   approvalsFile: string
 }
@@ -1282,8 +1303,11 @@ export function registerPluginRuntime(ctx: any, config: PluginRuntimeConfig = {}
     approve: runtime.approve.bind(runtime),
     reject: runtime.reject.bind(runtime),
     install: runtime.install.bind(runtime),
+    verifyRequest: runtime.verifyRequest.bind(runtime),
     verifyBinding: runtime.verifyBinding.bind(runtime),
     healthCheck: runtime.healthCheck.bind(runtime),
+    lastHealthReport: runtime.lastHealthReport.bind(runtime),
+    catalog: runtime.catalog.bind(runtime),
     recordEvidence: runtime.recordEvidence.bind(runtime),
     approvalsFile: runtime.approvalsFile,
   }

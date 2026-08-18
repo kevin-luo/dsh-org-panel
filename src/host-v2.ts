@@ -2,6 +2,7 @@
 import { EMPLOYEE_BLUEPRINTS, employeeById } from './org-blueprints'
 import { EvolutionStore } from './persistence/evolution-store'
 import { CompanyStore } from './persistence/company-store'
+import { readCtxService } from './runtime/ctx-service'
 import { evolutionLevel, type EmployeeIdentity, type MemoryKind, type TaskOutcome, type TaskSource } from './persistence/types'
 
 export type Employee = {
@@ -334,7 +335,13 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
     if (candidate) return candidate
     if (lastAgent) return lastAgent
     // 宿主若自己暴露了主会话就用它。全部是可选探测，取不到就是取不到，不猜也不造。
-    for (const probe of [() => ctx?.agent, () => ctx?.agents?.current?.(), () => ctx?.agents?.main?.(), () => subagents?.rootAgent?.()]) {
+    // 走 readCtxService：真实 cordis Context 上裸读 ctx.agent / ctx.agents 会抛「without inject」。
+    for (const probe of [
+      () => readCtxService(ctx, 'agent'),
+      () => (readCtxService(ctx, 'agents') as any)?.current?.(),
+      () => (readCtxService(ctx, 'agents') as any)?.main?.(),
+      () => subagents?.rootAgent?.(),
+    ]) {
       try {
         const value = probe()
         if (value) { lastAgent = value; return value }

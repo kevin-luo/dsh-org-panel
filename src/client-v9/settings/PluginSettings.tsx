@@ -2,9 +2,11 @@
 // 四个子页：已安装 / 市场 / 审批记录 / 权限。
 // 状态严格按 Plugin Runtime 的真实校验结果显示 Available / Degraded / Missing / Disabled，
 // 未验证的插件绝不显示成「已学会」（需求文档五十九）。
-// 审批口径（需求文档四十八）：这一版 DSH 的 conversation.view 没有 client→host 的 RPC 通道
-// （见 client-v9/company-bridge.ts 的实读结论），面板拿不到 actions.approve 时按钮就是点不动的。
-// 那种情况下不摆一个禁用按钮假装「这里能批」，而是把真正走得通的批准方式写出来。
+// 审批口径（需求文档四十八）：面板拿到 actions.approve 时，「批准」就是真的能点 ——
+// 它经 `/org-panel` RPC 把**老板的这一次点击**送到 host 的 PluginRuntime.approve。
+// 拿不到时说明这次运行时没挂上那条通道，那就不摆一个禁用按钮假装「这里能批」，
+// 而是把当下真正走得通的批准方式写出来（见 APPROVAL_OFFLINE_HINT）。
+// 安全边界一个字都没放宽：这条通道只有浏览器里的人类能发起，LLM 手上只有 Tool Registry。
 import { createElement as h, useState } from 'react'
 import type { PluginBinding, PluginStatus } from '../../persistence/types'
 import type { InstallRequest, InstallRequestStatus } from '../../capabilities/plugin-runtime'
@@ -31,13 +33,23 @@ export type InstalledPluginRow = PluginBinding & {
 /** 未知 ≠ 没有。审批台账没下发时用它，绝不显示成「暂无待审批」。 */
 const UNKNOWN = '未知'
 
-/** 面板不能审批时，必须给出真正走得通的路径，而不是把老板指回这个页面。 */
+/**
+ * 面板此刻批不了时，必须给出真正走得通的路径，而不是把老板指回这个页面。
+ *
+ * 注意措辞的边界：**不是「DSH 没有这个能力」**（DSH 的 client↔host 通用 RPC 一直都在，
+ * 就是 ctx.connection.rpc），而是「当前运行时没有提供 `/org-panel` 频道」。
+ * 前一种说法是错的，而且它同时劝退老板和下一个改这块代码的人。
+ */
 export const APPROVAL_OFFLINE_HINT = [
-  '面板无法在这里批准：这一版 DSH 的 conversation.view 没有 client→host 的 RPC 通道，浏览器里的按钮到不了 Plugin Runtime。',
-  '真正走得通的批准方式只有两条，两条都是人类动作：',
+  '面板此刻批不了：当前运行时没有提供 /org-panel RPC 频道（插件 host 未挂载，或这个部署形态没有 httpServer），浏览器里的按钮到不了 Plugin Runtime。',
+  'host 把这条频道挂上之后，这里会直接出现真正能点的「批准」按钮 —— 那一下点击仍然是人类动作，模型永远走不到这条路。',
+  '在通道恢复之前，走得通的批准方式有两条，两条也都是人类动作：',
   '① 在 cordis 配置的 pluginInstall.preapproved 里写上这个包名并重启，员工再次提交同一个包时会被自动批准；',
   '② 由运维在宿主进程里调用 PluginRuntime.approve(requestId, { by: "老板", channel: "cli" })。',
 ].join('\n')
+
+/** 通道还在探测中：既不能说「能批」，也不能说「批不了」。 */
+export const APPROVAL_PROBING_HINT = '正在确认面板与 host 之间的 /org-panel 通道是否可用，稍等一下再看这一页。'
 
 export type PluginSettingsData = {
   installed?: InstalledPluginRow[]
@@ -45,6 +57,13 @@ export type PluginSettingsData = {
   /** 市场结果只能来自真实搜索（staff_plugin_market_search 或 actions.search），不内置任何清单。 */
   market?: MarketPluginItem[]
   health?: { checkedAt?: number; catalogSize?: number; changed?: number }
+  /** true = 面板与 host 的 `/org-panel` 通道还在探测中，此刻既不能说能批也不能说批不了。 */
+  channelProbing?: boolean
+  /**
+   * host 明确回答「这一项本次运行拿不到」时给的真实原因（如插件运行时没挂载）。
+   * 有它就原样上屏 —— 「拿不到」和「一条都没有」是两回事，不许合并。
+   */
+  reason?: string
   loaded?: boolean
 }
 
@@ -96,7 +115,7 @@ function InstalledTab(props: { data?: PluginSettingsData; actions?: PluginSettin
         `安装 ${formatDateTime(row.installedAt)} · 验证 ${formatDateTime(row.lastVerifiedAt)}`,
       ].filter(Boolean).join(' · '),
       side: h(StatusPill, { tone: PLUGIN_TONE[row.status], label: PLUGIN_LABEL[row.status] }),
-    })) : h(Empty, { text: loaded ? '暂无已安装插件。员工缺能力时会先搜市场并提交安装申请，等你批准。' : '面板没有拿到插件绑定（需要 host 下发 CompanySnapshot），这里不代表「一个插件都没装」。' }),
+    })) : h(Empty, { text: loaded ? '暂无已安装插件。员工缺能力时会先搜市场并提交安装申请，等你批准。' : '面板没有拿到插件绑定（需要 host 下发 CompanySnapshot），这里不代表「一个插件都没装」。点右上角「刷新」重新读取一次；仍然读不到就是 host 侧没挂上 /org-panel 频道。' }),
   )
 }
 
@@ -147,7 +166,7 @@ function MarketTab(props: { data?: PluginSettingsData; actions?: PluginSettingsA
         run: props.actions?.requestInstall ? (() => props.actions!.requestInstall!(item)) : undefined,
         hint: '当前运行时未提供安装申请提交能力', onDone: () => props.onRefresh?.(),
       }),
-    })) : h(Empty, { text: '暂无搜索结果。' }),
+    })) : h(Empty, { text: props.actions?.search ? '暂无搜索结果。在上面的搜索框里输入关键词（如 github / browser / image）后回车，结果只来自真实市场搜索。' : '暂无搜索结果。让员工执行 staff_plugin_market_search 搜一次，真实结果会出现在这里。' }),
   )
 }
 
@@ -155,13 +174,17 @@ function ApprovalTab(props: { data?: PluginSettingsData; actions?: PluginSetting
   const loaded = Array.isArray(props.data?.approvals)
   const rows = [...(props.data?.approvals || [])].sort((a, b) => (b.updatedAt || b.createdAt || 0) - (a.updatedAt || a.createdAt || 0))
   const canApprove = typeof props.actions?.approve === 'function'
+  // 通道还没探明时不许下任何结论：既不摆「批准」，也不宣布「此处无法审批」。
+  const probing = !canApprove && props.data?.channelProbing === true
   const [openId, setOpenId] = useState<string | null>(null)
   return h(SettingsCard, {
     title: '审批记录',
     meta: loaded ? (rows.length ? `${rows.length} 条 · 待审批 ${rows.filter((item) => item.status === 'pending').length}` : '暂无') : '未读取',
-    note: '批准只能来自人类点击：任何工具参数都无法把一条申请变成已批准。',
+    note: '批准只能来自人类点击：任何工具参数都无法把一条申请变成已批准。面板上的「批准」经 /org-panel RPC 把你的这次点击送到 host，模型够不到这条通道。',
   },
-    canApprove ? null : h('div', { className: 'cy9-set-banner' }, APPROVAL_OFFLINE_HINT.split('\n').map((line, index) => h('div', { key: index }, line))),
+    canApprove ? null : probing
+      ? h('div', { className: 'cy9-set-banner info' }, APPROVAL_PROBING_HINT)
+      : h('div', { className: 'cy9-set-banner' }, APPROVAL_OFFLINE_HINT.split('\n').map((line, index) => h('div', { key: index }, line))),
     rows.length ? rows.map((request) => {
       const open = openId === request.requestId
       return h('div', { key: request.requestId },
@@ -178,7 +201,11 @@ function ApprovalTab(props: { data?: PluginSettingsData; actions?: PluginSetting
             h('button', { key: 'toggle', type: 'button', className: 'cy9-set-btn', onClick: () => setOpenId(open ? null : request.requestId) }, open ? '收起' : '详情'),
             // 没有写通道时不摆禁用按钮：那等于告诉老板「这里本该能批」。直接说明去哪儿批。
             request.status === 'pending' && !canApprove
-              ? h(StatusPill, { key: 'offline', tone: 'off', label: '此处无法审批', title: APPROVAL_OFFLINE_HINT })
+              ? h(StatusPill, {
+                key: 'offline', tone: 'off',
+                label: probing ? '通道确认中' : '此处无法审批',
+                title: probing ? APPROVAL_PROBING_HINT : APPROVAL_OFFLINE_HINT,
+              })
               : null,
             request.status === 'pending' && canApprove ? h(ActionButton, {
               key: 'approve', label: '批准', tone: 'primary',
@@ -219,7 +246,7 @@ function ApprovalTab(props: { data?: PluginSettingsData; actions?: PluginSetting
           ],
         }) : null,
       )
-    }) : h(Empty, { text: loaded ? '暂无审批记录。' : '面板没有拿到审批台账（host 未下发 plugins.approvals）：这里既不是「没有申请」，也不是「没有待审批」。台账真实存在 host 的 plugin-approvals.json 里。' }),
+    }) : h(Empty, { text: loaded ? '暂无审批记录。员工在市场里找到需要的插件后会提交安装申请，申请会出现在这里等你批准。' : '面板没有拿到审批台账（host 未下发 plugins.approvals）：这里既不是「没有申请」，也不是「没有待审批」。台账真实存在 host 的 plugin-approvals.json 里。' }),
   )
 }
 
@@ -248,7 +275,7 @@ function PermissionTab(props: { data?: PluginSettingsData }) {
           ].join(' · '),
           side: h(StatusPill, { tone: PLUGIN_TONE[row.status], label: PLUGIN_LABEL[row.status] }),
         })
-      }) : h(Empty, { text: installedLoaded ? '暂无已安装插件。' : '面板没有拿到插件绑定，无法列出权限。' }),
+      }) : h(Empty, { text: installedLoaded ? '暂无已安装插件，因此没有任何插件权限。先去「市场」页搜一个，员工提交申请、你批准之后它才会出现在这里。' : '面板没有拿到插件绑定，无法列出权限。点右上角「刷新」重新读取一次。' }),
     ),
     h(SettingsCard, {
       title: '待批准申请声明的权限',
@@ -261,7 +288,7 @@ function PermissionTab(props: { data?: PluginSettingsData }) {
           desc: `权限 ${request.permissions.length ? request.permissions.join('、') : DASH} · 风险 ${request.risks.length ? request.risks.join('、') : DASH} · 安装命令 ${request.installCommand}`,
           side: h(StatusPill, { tone: 'warn', label: '等待老板审批' }),
         }))
-        : h(Empty, { text: approvalsLoaded ? '暂无待批准申请。' : `是否有待批准申请：${UNKNOWN}（面板没有拿到审批台账）。` }),
+        : h(Empty, { text: approvalsLoaded ? '暂无待批准申请。员工提交安装申请后，它声明的权限与风险会先摊开在这里，再由你决定批不批。' : `是否有待批准申请：${UNKNOWN}（面板没有拿到审批台账）。` }),
     ),
   )
 }
@@ -274,6 +301,11 @@ export function PluginSettings(props: { data?: PluginSettingsData; actions?: Plu
     approvals: Array.isArray(props.data?.approvals) ? String(props.data!.approvals!.length) : UNKNOWN,
   }
   return h('div', { className: 'cy9-set-main' },
+    // host 明确说了「本次运行拿不到插件台账」时，原样转述它的原话 ——
+    // 那跟「一个插件都没装」是两回事，不许合并成同一句话。
+    props.data?.reason
+      ? h('div', { className: 'cy9-set-banner' }, `面板没有拿到插件台账 —— host 的原话：${props.data.reason}`)
+      : null,
     h('div', { className: 'cy9-set-card' }, h(Tabs, {
       value: tab, onChange: setTab,
       items: [
