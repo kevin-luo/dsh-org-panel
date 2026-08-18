@@ -48,6 +48,7 @@
     "assets:build": "node scripts/build-runtime-assets.mjs",
     "build": "npm run assets:build && tsdown && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "size-check": "node scripts/check-size.mjs",
     "prepack": "npm run build && npm run size-check"
   },

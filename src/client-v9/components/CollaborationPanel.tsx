@@ -1,4 +1,4 @@
-import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement as h, useEffect, useMemo, useRef } from 'react'
 import type { Channel, CompanyMessage, StaffDef } from '../types'
 import { staffThumb } from '../asset-map'
 import { channelMatchesNode, clip, formatClock, staffOf } from '../selectors'
@@ -24,17 +24,15 @@ export function CollaborationPanel(props: {
   onToggleCollapsed: () => void
   height: number
   onHeight: (height: number) => void
-  draft: string
-  onDraft: (value: string) => void
-  onSend: (text: string) => void
   thread: CompanyMessage | null
   onOpenThread: (message: CompanyMessage) => void
   onCloseThread: () => void
 }) {
+  // 工作群只负责「看」：频道 / 消息流 / 会议 / Tool Trace / thread / typing。
+  // 「写」全部交给 DSH 原生 Composer（本面板下方的 [data-composer-seat]），这里没有任何自制输入控件。
   const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError,
-    activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight, draft, onDraft, onSend,
+    activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight,
     thread, onOpenThread, onCloseThread } = props
-  const [mentionIdx, setMentionIdx] = useState(0)
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const gripRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -49,30 +47,11 @@ export function CollaborationPanel(props: {
   const channelCount = useMemo(() => Object.fromEntries(channels.map((channel) => [channel.id,
     channel.departments.length ? staff.filter((item) => channel.departments.includes(item.department || '')).length : staff.length,
   ])), [channels, staff])
-  const mentionQuery = useMemo(() => draft.match(/@([^\s@#]{0,10})$/)?.[1] ?? null, [draft])
-  const mentionCandidates = useMemo(() => mentionQuery == null ? [] : staff.filter((item) => {
-    const query = mentionQuery.toLowerCase()
-    return !query || item.name.toLowerCase().includes(query) || (item.aliases || []).some((alias) => alias.toLowerCase().includes(query))
-  }).slice(0, 7), [mentionQuery, staff])
-  useEffect(() => setMentionIdx(0), [mentionQuery])
   useEffect(() => {
     const el = bodyRef.current
     if (el && followRef.current) el.scrollTop = el.scrollHeight
   }, [visible.length, runningCalls?.length, running, typingStaff])
 
-  const pickMention = (employee: StaffDef) => onDraft(draft.replace(/@[^\s@#]{0,10}$/, `@${employee.name} `))
-  const send = () => { const value = draft.trim(); if (value) { onSend(value); onDraft('') } }
-  const onKeyDown = (event: any) => {
-    if (mentionCandidates.length && mentionQuery != null) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault(); setMentionIdx((mentionIdx + (event.key === 'ArrowDown' ? 1 : -1) + mentionCandidates.length) % mentionCandidates.length); return
-      }
-      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
-        event.preventDefault(); pickMention(mentionCandidates[mentionIdx] || mentionCandidates[0]); return
-      }
-    }
-    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() }
-  }
   const onGripDown = (event: any) => {
     event.preventDefault(); gripRef.current = { startY: event.clientY, startH: height }
     const move = (next: MouseEvent) => { if (gripRef.current) onHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, gripRef.current.startH + gripRef.current.startY - next.clientY))) }
@@ -100,21 +79,15 @@ export function CollaborationPanel(props: {
         h('div', { className: 'cy9-chat-body', ref: bodyRef, role: 'log', 'aria-live': 'polite', onScroll: (event: any) => {
           const el = event.currentTarget as HTMLDivElement; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         } },
-          visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。输入 @员工姓名，消息会直达对应独立子代理。') : null,
+          visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。在下方 DSH 输入框里 @员工姓名，消息会直达对应独立子代理。') : null,
           visible.map((message) => h(ChatMessage, { key: message.id, message, staff, onOpenThread })),
           (runningCalls || []).map((call: any) => h('div', { key: call.callId, className: 'cy9-msg-tool running' },
             h('span', { className: 'cy9-msg-tool-icon' }, 'RUN'), h('span', { className: 'cy9-msg-tool-main' }, h('b', null, String(call.name || 'tool')), h('span', null, '正在执行真实工具…')),
           )),
           typingStaff ? h('div', { className: 'cy9-msg-typing' }, h(AssetImage, { src: staffThumb(typingStaff.id), alt: typingStaff.name, fallback: typingStaff.name }), `${typingStaff.name} 正在输入`, h('span', null, h('i'), h('i'), h('i'))) : running ? h('div', { className: 'cy9-msg-typing' }, '秘书正在协调任务', h('span', null, h('i'), h('i'), h('i'))) : null,
         ),
-        h('div', { className: 'cy9-chat-input' },
-          mentionCandidates.length && mentionQuery != null ? h('div', { className: 'cy9-mention-pop' }, mentionCandidates.map((employee, index) => h('button', {
-            key: employee.id, type: 'button', className: index === mentionIdx ? 'on' : '', onClick: () => pickMention(employee),
-          }, h(AssetImage, { src: staffThumb(employee.id), alt: employee.name, fallback: employee.name }), h('b', null, employee.name), h('span', null, employee.role)))) : null,
-          h('textarea', { 'data-cy9-composer': 'true', value: draft, placeholder: `在 # ${channel?.name || '团队总览'} 输入消息，@ 点名员工…`, onChange: (event: any) => onDraft(event.target.value), onKeyDown }),
-          h('span', null, 'Enter 发送 · Shift+Enter 换行'),
-          h('button', { type: 'button', className: 'cy9-chat-send', disabled: !draft.trim(), onClick: send }, '发送'),
-        ),
+        // 输入位说明：真正的输入框是下方 DSH 原生 Composer，这里只做一行只读指引。
+        h('div', { className: 'cy9-chat-hint' }, `发言请用下方 DSH 输入框 · 输入 @ 可点名员工${channel ? ` · 当前 # ${channel.name}` : ''}`),
       ),
       thread ? h('aside', { className: 'cy9-thread' },
         h('div', { className: 'cy9-thread-head' }, h('b', null, thread.kind === 'tool' ? '工具轨迹' : '讨论线程'), h('button', { type: 'button', onClick: onCloseThread }, '关闭')),

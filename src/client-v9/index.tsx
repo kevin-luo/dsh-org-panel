@@ -4,6 +4,9 @@ import { createElement } from 'react'
 import { EMPLOYEE_BLUEPRINTS, ROLE_BLUEPRINTS } from '../org-blueprints'
 import type { OrgPanelConfig, RoleDef, StaffDef } from './types'
 import { installStyles } from './styles'
+import { installSettingsStyles } from './settings/styles'
+import { installProfileStyles } from './employee-profile/EmployeeProfile'
+import { companyEventBus } from '../runtime/event-bus'
 import { CompanyView } from './company-view'
 
 // 与 client-v5 保持一致的部门映射，保证频道过滤与组织架构口径不变。
@@ -61,7 +64,15 @@ export function apply(ctx: any, config?: OrgPanelConfig) {
   const inputTriggers = ctx && ctx.get ? ctx.get('inputTriggers') : undefined
   const normalized = normalizedConfig(config)
 
+  // 三套样式各自幂等注入、互不覆盖：主布局 / 员工档案 / 公司设置中心。
+  // 组件内部也会自注入，这里提前装是为了首次打开弹窗时不闪。
   installStyles()
+  installProfileStyles()
+  installSettingsStyles()
+
+  // 名册先落到 Company Event Bus：零事件的员工也要有一份 idle 状态，
+  // 办公室才能在空 Session 里把人画在工位上，而不是整间办公室空着。
+  companyEventBus.setEmployeeIds(normalized.staff.map((item) => item.id))
 
   // 复用现有 @ trigger 机制，不重写 mention parser。
   if (inputTriggers && typeof inputTriggers.registerSource === 'function') {

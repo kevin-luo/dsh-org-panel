@@ -1,5 +1,6 @@
 import type {
   Delegation,
+  EmployeeStatus,
   LegacyStatus,
   OfficePlacement,
   RoleDef,
@@ -7,7 +8,15 @@ import type {
   StaffMarker,
   StaffMeeting,
 } from './types'
-import { BREAKROOM_CENTER, MEETING_CENTER, STAFF_HOME } from './office-layout'
+import { DEFAULT_HOME, MEETING_CENTER, STAFF_HOME, STATION_CENTER, stationSeat } from './office-layout'
+import type {
+  CompanyEvent,
+  CompanyRuntime,
+  EmployeeRuntimeState,
+  EmployeeRuntimeStatus,
+  EventPlatform,
+} from '../runtime/company-events'
+import { emptyEmployeeRuntime, reduceCompanyRuntime } from '../runtime/company-events'
 
 export function clip(s: unknown, n: number): string {
   const t = String(s == null ? '' : s).replace(/\s+/g, ' ').trim()
@@ -159,28 +168,57 @@ export function settlementMaterial(text: string): { text: string; reasoning: str
     : { reasoning: '', text: reply }
 }
 
-export function extractDelegations(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): Delegation[] {
-  const calls: Record<string, { name: string; args: Record<string, any>; startTime: number | null }> = {}
+/** 一次会话里的一条工具调用记录：调用参数 + 结果（没有结果就是仍在进行）。 */
+export type ToolCallRecord = {
+  callId: string
+  name: string
+  args: Record<string, any>
+  startTime: number | null
+  result: { text: string; isError: boolean; endTime: number | null } | null
+  /** 该调用当前是否挂在 runningCalls 上（真实进行中，而非历史里未落结果的残留）。 */
+  live: boolean
+}
+
+/**
+ * 会话节点流 → 工具调用记录表。extractDelegations 与 deriveCompanyEvents 共用同一份采集，
+ * 保证「事件化」之后对真实会话数据的识别口径和重构前完全一致。
+ */
+export function collectToolCalls(nodes: any[], runningCalls: any[]): ToolCallRecord[] {
+  const calls: Record<string, { name: string; args: Record<string, any>; startTime: number | null; live: boolean }> = {}
   const results: Record<string, { text: string; isError: boolean; endTime: number | null }> = {}
   for (const n of nodes || []) {
     if (n && n.kind === 'assistant' && Array.isArray(n.blocks)) {
       for (const b of n.blocks as any[]) {
-        if (b && b.kind === 'tool-call' && b.callId) calls[b.callId] = { name: b.name, args: parseArgs(b.argsRaw), startTime: nodeTime(n) }
+        if (b && b.kind === 'tool-call' && b.callId) calls[b.callId] = { name: b.name, args: parseArgs(b.argsRaw), startTime: nodeTime(n), live: false }
       }
     } else if (n && n.kind === 'tool-result' && n.callId) {
       results[n.callId] = { text: extractText(n.content), isError: !!n.isError, endTime: nodeTime(n) }
-      if (n.call && !calls[n.callId]) calls[n.callId] = { name: n.call.name, args: parseArgs(n.call.argsRaw), startTime: nodeTime(n) }
+      if (n.call && !calls[n.callId]) calls[n.callId] = { name: n.call.name, args: parseArgs(n.call.argsRaw), startTime: nodeTime(n), live: false }
     }
   }
   for (const rc of runningCalls || []) {
-    if (rc && rc.callId && !calls[rc.callId]) calls[rc.callId] = { name: rc.name, args: parseArgs(rc.argsRaw), startTime: nodeTime(rc) }
+    if (!rc || !rc.callId) continue
+    if (!calls[rc.callId]) calls[rc.callId] = { name: rc.name, args: parseArgs(rc.argsRaw), startTime: nodeTime(rc), live: true }
+    else calls[rc.callId].live = true
   }
+  return Object.keys(calls).map((callId) => ({
+    callId,
+    name: calls[callId].name,
+    args: calls[callId].args,
+    startTime: calls[callId].startTime,
+    live: calls[callId].live,
+    result: results[callId] || null,
+  }))
+}
+
+export function extractDelegations(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): Delegation[] {
   const out: Delegation[] = []
   const settled = settledChildIds(nodes)
-  for (const callId of Object.keys(calls)) {
-    const c = calls[callId]
+  for (const record of collectToolCalls(nodes, runningCalls)) {
+    const callId = record.callId
+    const c = record
     if (!isDispatchTool(c.name)) continue
-    const res = results[callId]
+    const res = record.result
     if (c.name === 'staff_meeting') {
       const participantIds = Array.isArray(c.args?.staff) ? c.args.staff.map(String) : []
       const meetingDesc = clip(c.args?.topic || '员工短会', 160)
@@ -441,28 +479,251 @@ export function channelMatchesNode(node: any, channelId: string, staff: StaffDef
   })
 }
 
+/** 员工固定工位。同一个员工任何时候查到的都是同一个坐标，没有随机、没有 tick。 */
+export function staffHome(item: StaffDef): { x: number; y: number; zone: string } {
+  return STAFF_HOME[item.id] || STAFF_HOME[item.roleId] || DEFAULT_HOME
+}
+
+/**
+ * 兼容旧签名的落位函数（company-view / OfficeWorld 仍在用）。
+ * 需求文档三十四条：idle = 待在工位，位置完全不变；tick 参数保留只为签名兼容，
+ * **绝不参与任何位置计算**，原来那段 (tick + id.length) % 18 跑茶水间的逻辑已整段删除。
+ */
 export function officePlacement(
   item: StaffDef,
   status: LegacyStatus,
   tick: number,
   task?: Delegation,
 ): OfficePlacement {
-  const home = STAFF_HOME[item.id] || STAFF_HOME[item.roleId] || { x: 600, y: 400, zone: 'rd' }
+  void tick
+  const home = staffHome(item)
   if (status === 'running' && task?.tool === 'staff_meeting') {
-    return { x: MEETING_CENTER.x + (tick % 3) * 28, y: MEETING_CENTER.y + (tick % 2) * 20, zone: MEETING_CENTER.zone, activity: '在会议室讨论' }
+    const seat = stationSeat(MEETING_CENTER, meetingSeatIndex(item.id))
+    return { ...seat, activity: '在会议室讨论' }
   }
-  if (status === 'running') {
-    return { ...home, activity: '处理真实任务' }
-  }
-  if (status === 'wait') {
-    return { x: MEETING_CENTER.x, y: MEETING_CENTER.y + 40, zone: 'meeting', activity: '等待决策' }
-  }
-  const phase = (tick + item.id.length) % 18
-  if (phase >= 12 && phase <= 14 && status === 'idle') {
-    return { x: BREAKROOM_CENTER.x, y: BREAKROOM_CENTER.y, zone: BREAKROOM_CENTER.zone, activity: '茶水间休息' }
-  }
+  if (status === 'running') return { ...home, activity: '处理真实任务' }
+  // 卡住的人留在自己工位。把人挪去会议室「等待决策」属于办公室自己编业务状态（三十三条），已删除。
+  if (status === 'wait') return { ...home, activity: '任务卡住，等老板决策' }
   if (status === 'done') return { ...home, activity: '整理交付' }
   return { ...home, activity: '工位待命' }
+}
+
+/** 无参会人名单时的确定性席位号：只由 id 决定，进程重启也一样。 */
+function meetingSeatIndex(employeeId: string): number {
+  let hash = 0
+  for (let index = 0; index < employeeId.length; index++) hash = (hash * 31 + employeeId.charCodeAt(index)) >>> 0
+  return hash % 6
+}
+
+// ---------------------------------------------------------------------------
+// 事件驱动办公室（需求文档三十二 / 三十三）
+// 会话节点流 → CompanyEvent[] → reducer → 状态。办公室只读最后一步。
+// ---------------------------------------------------------------------------
+
+const EXTERNAL_PLATFORMS = ['feishu', 'qq', 'wechat']
+const VISION_TOOLS = ['vision_analyze']
+const PLUGIN_INSTALL_RE = /plugin[_.-]?install|install[_.-]?plugin/i
+const PLUGIN_SEARCH_TOOLS = ['staff_plugin_market_search']
+const SKILL_TOOLS = ['staff_skill_learn']
+
+function fallbackEmployeeId(staff: StaffDef[]): string {
+  return staff.find((item) => item.id === 'secretary')?.id || staff[0]?.id || 'secretary'
+}
+
+/** 工具调用的归属员工：优先看参数里的真实 staff/employeeId，取不到就归主 Agent（秘书）。 */
+function callOwner(args: Record<string, any>, staff: StaffDef[]): string {
+  const raw = typeof args?.staff === 'string' ? args.staff
+    : typeof args?.employeeId === 'string' ? args.employeeId
+      : typeof args?.employee === 'string' ? args.employee : ''
+  return (raw ? staffOf(raw, staff)?.id : undefined) || fallbackEmployeeId(staff)
+}
+
+function parseJsonLoose(text: string): any {
+  try {
+    return JSON.parse(text)
+  } catch { /* 退化成从文本中截首个 JSON 片段 */ }
+  const match = text.match(/[{[][\s\S]*[}\]]/)
+  if (!match) return null
+  try {
+    return JSON.parse(match[0])
+  } catch {
+    return null
+  }
+}
+
+/** 外部平台标记：只有节点真的带了 feishu/qq/wechat 才认，绝不凭空造 external.message。 */
+export function externalPlatform(node: any): EventPlatform | null {
+  const source = messageSource(node)
+  const raw = String(source?.platform || source?.channelPlatform || node?.external?.platform || '')
+  return EXTERNAL_PLATFORMS.includes(raw) ? (raw as EventPlatform) : null
+}
+
+/**
+ * 会话节点流 → CompanyEvent[]。
+ * 任务 / 会议部分完全复用 extractDelegations 的归属口径（staff_chat / staff_meeting /
+ * subagent* / workflow 与 [[NIUMA_STAFF]] 标记），事件化之后识别结果不变。
+ */
+export function deriveCompanyEvents(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): CompanyEvent[] {
+  const events: CompanyEvent[] = []
+  const settled = settledChildIds(nodes)
+  const records = collectToolCalls(nodes, runningCalls)
+
+  for (const record of records) {
+    const start = record.startTime ?? 0
+    const res = record.result
+    const end = res ? (res.endTime ?? start) : start
+
+    if (record.name === 'staff_meeting') {
+      const participants: string[] = []
+      for (const raw of Array.isArray(record.args?.staff) ? record.args.staff : []) {
+        const participant = staffOf(String(raw), staff)
+        if (participant && !participants.includes(participant.id)) participants.push(participant.id)
+      }
+      if (!participants.length) continue
+      const topic = clip(record.args?.topic || '员工短会', 160)
+      events.push({ id: `meeting:${record.callId}:start`, type: 'meeting.started', at: start, origin: 'session', meetingId: record.callId, participants, topic })
+      if (res) events.push({ id: `meeting:${record.callId}:end`, type: 'meeting.finished', at: end, origin: 'session', meetingId: record.callId, participants, summary: clip(res.text, 120) })
+      continue
+    }
+
+    if (isDispatchTool(record.name)) {
+      const rawDesc = record.name === 'staff_chat'
+        ? (record.args?.message || '')
+        : record.name === 'workflow'
+          ? (record.args?.meta?.name || record.args?.name || record.args?.description || '')
+          : (record.args?.description || record.args?.prompt || record.args?.task || record.args?.instruction || '')
+      const title = clip(rawDesc || '(未命名任务)', 160)
+      const explicitStaff = record.name === 'staff_chat' && typeof record.args?.staff === 'string' ? record.args.staff : ''
+      const roleId = explicitStaff ? (staffOf(explicitStaff, staff)?.roleId || explicitStaff) : assignRoleId(rawDesc, record.name, record.args, roles, staff)
+      const employeeId = explicitStaff || staffForRole(roleId, staff)
+      const marker = res ? parseStaffMarker(res.text) : null
+      const waiting = record.name === 'staff_chat' && !!marker && marker.state === 'accepted' && !settled.has(marker.childId)
+      const running = !res || waiting
+      events.push({ id: `task:${record.callId}:assigned`, type: 'task.assigned', at: start, origin: 'session', employeeId, taskId: record.callId, title, tool: record.name, source: 'web' })
+      events.push({ id: `task:${record.callId}:started`, type: 'task.started', at: start, origin: 'session', employeeId, taskId: record.callId, title, tool: record.name })
+      if (!running && res) {
+        if (res.isError) events.push({ id: `task:${record.callId}:blocked`, type: 'task.blocked', at: end, origin: 'session', employeeId, taskId: record.callId, reason: clip(res.text, 80) || '工具返回错误' })
+        else events.push({ id: `task:${record.callId}:completed`, type: 'task.completed', at: end, origin: 'session', employeeId, taskId: record.callId, outcome: 'success', summary: clip(res.text, 120) })
+      }
+      continue
+    }
+
+    // 非派活工具：没有结果又不在 runningCalls 上的，属于历史残留，不允许让人一直「工作中」。
+    if (!res && !record.live) continue
+    const employeeId = callOwner(record.args, staff)
+
+    if (VISION_TOOLS.includes(record.name)) {
+      const images = Array.isArray(record.args?.images) ? record.args.images.length : undefined
+      events.push({ id: `vision:${record.callId}:start`, type: 'vision.started', at: start, origin: 'session', employeeId, callId: record.callId, mode: typeof record.args?.mode === 'string' ? record.args.mode : undefined, images })
+      if (res) events.push({ id: `vision:${record.callId}:end`, type: 'vision.completed', at: end, origin: 'session', employeeId, callId: record.callId, ok: !res.isError, description: clip(res.text, 120) })
+      continue
+    }
+
+    if (PLUGIN_INSTALL_RE.test(record.name)) {
+      const pluginName = clip(String(record.args?.plugin || record.args?.name || record.args?.packageName || '插件'), 48)
+      events.push({ id: `plugin:${record.callId}:start`, type: 'plugin.install.started', at: start, origin: 'session', employeeId, pluginName, pluginId: typeof record.args?.pluginId === 'string' ? record.args.pluginId : undefined })
+      if (res) events.push({ id: `plugin:${record.callId}:end`, type: 'plugin.installed', at: end, origin: 'session', employeeId, pluginName, pluginId: typeof record.args?.pluginId === 'string' ? record.args.pluginId : undefined, ok: !res.isError })
+      continue
+    }
+
+    if (PLUGIN_SEARCH_TOOLS.includes(record.name)) {
+      events.push({ id: `tool:${record.callId}:start`, type: 'tool.started', at: start, origin: 'session', employeeId, callId: record.callId, tool: record.name })
+      if (res) {
+        events.push({ id: `tool:${record.callId}:end`, type: 'tool.completed', at: end, origin: 'session', employeeId, callId: record.callId, tool: record.name, ok: !res.isError })
+        if (!res.isError) {
+          const parsed = parseJsonLoose(res.text)
+          const list: any[] = Array.isArray(parsed) ? parsed
+            : Array.isArray(parsed?.results) ? parsed.results
+              : Array.isArray(parsed?.plugins) ? parsed.plugins
+                : Array.isArray(parsed?.items) ? parsed.items : []
+          list.forEach((item, index) => {
+            if (!item || typeof item !== 'object' || !item.name) return
+            events.push({ id: `plugin-found:${record.callId}:${index}`, type: 'plugin.discovered', at: end, origin: 'session', employeeId, pluginName: String(item.name), source: item.owner ? String(item.owner) : undefined })
+          })
+        }
+      }
+      continue
+    }
+
+    events.push({ id: `tool:${record.callId}:start`, type: 'tool.started', at: start, origin: 'session', employeeId, callId: record.callId, tool: record.name })
+    if (res) {
+      events.push({ id: `tool:${record.callId}:end`, type: 'tool.completed', at: end, origin: 'session', employeeId, callId: record.callId, tool: record.name, ok: !res.isError })
+      if (SKILL_TOOLS.includes(record.name) && !res.isError) {
+        const skillName = clip(String(record.args?.skill || record.args?.name || record.args?.topic || '新技能'), 24)
+        events.push({ id: `skill:${record.callId}`, type: 'skill.updated', at: end, origin: 'session', employeeId, skillName, source: record.name })
+      }
+    }
+  }
+
+  // 外部平台消息：只有节点真的带平台标记才发 message.received（Phase 6 Adapter 会直接投更完整的事件）。
+  for (const node of nodes || []) {
+    const platform = externalPlatform(node)
+    if (!platform) continue
+    if (node?.kind !== 'user' && node?.kind !== 'steering') continue
+    const source = messageSource(node)
+    const at = nodeTime(node) ?? 0
+    const text = extractText(node.content)
+    const target = staff.find((employee) => employee.id !== 'secretary' && text.includes(`@${employee.name}`))
+    events.push({
+      id: `im:${platform}:${String(source?.messageId || node?.seq || at)}`,
+      type: 'message.received', at, origin: 'session',
+      platform, conversationId: String(source?.conversationId || source?.chatId || platform),
+      preview: clip(text, 60), senderName: source?.senderName ? String(source.senderName) : undefined,
+      targetEmployeeId: target?.id,
+      mentions: target ? [target.id] : [],
+    })
+  }
+
+  return events
+}
+
+/** 会话节点流 → 公司运行时状态（事件化全链路的成品，办公室直接消费这个）。 */
+export function buildCompanyRuntime(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): CompanyRuntime {
+  return reduceCompanyRuntime(deriveCompanyEvents(nodes, runningCalls, roles, staff), { employeeIds: staff.map((item) => item.id) })
+}
+
+const RUNTIME_TO_EMPLOYEE: Record<EmployeeRuntimeStatus, EmployeeStatus> = {
+  idle: 'idle', working: 'working', meeting: 'meeting', blocked: 'blocked', done: 'done',
+  // 识图 / 装插件在视觉上仍是「在干活」，用 working 复用现有精灵样式，具体做什么看 activity 文案。
+  vision: 'working', installing: 'working',
+}
+
+const RUNTIME_TO_LEGACY: Record<EmployeeRuntimeStatus, LegacyStatus> = {
+  idle: 'idle', working: 'running', meeting: 'running', blocked: 'wait', done: 'done',
+  vision: 'running', installing: 'running',
+}
+
+export function runtimeToEmployeeStatus(status: EmployeeRuntimeStatus): EmployeeStatus {
+  return RUNTIME_TO_EMPLOYEE[status] || 'idle'
+}
+
+export function runtimeToLegacyStatus(status: EmployeeRuntimeStatus): LegacyStatus {
+  return RUNTIME_TO_LEGACY[status] || 'idle'
+}
+
+/**
+ * 运行时状态 → 办公室坐标。位置只由 state.station 决定，
+ * 没有事件 → station 恒为 'desk' → 坐标恒为工位，放 10 分钟也纹丝不动。
+ */
+export function officePlacementFromRuntime(item: StaffDef, state?: EmployeeRuntimeState | null): OfficePlacement {
+  const runtime = state || emptyEmployeeRuntime(item.id)
+  const home = staffHome(item)
+  if (runtime.station === 'desk') return { ...home, activity: runtime.activity }
+  const center = STATION_CENTER[runtime.station]
+  const roster = runtime.station === 'meeting' ? (runtime.meeting?.participants || []) : []
+  const index = roster.indexOf(item.id)
+  const seat = stationSeat(center, index >= 0 ? index : meetingSeatIndex(item.id))
+  return { ...seat, activity: runtime.activity }
+}
+
+/** 运行时状态 → 旧版 statuses/tasksMap 中的 statuses 形态，便于渐进接线。 */
+export function statusesFromRuntime(staff: StaffDef[], runtime: CompanyRuntime): Record<string, LegacyStatus> {
+  const statuses: Record<string, LegacyStatus> = {}
+  for (const item of staff) {
+    const state = runtime.employees[item.id]
+    statuses[item.id] = state ? runtimeToLegacyStatus(state.status) : 'idle'
+  }
+  return statuses
 }
 
 export function buildCompanyStatuses(
