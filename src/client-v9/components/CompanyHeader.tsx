@@ -1,6 +1,13 @@
-import { createElement as h } from 'react'
+import { createElement as h, useSyncExternalStore } from 'react'
 import { brandLogo } from '../asset-map'
+import { companyPresence } from '../selectors'
+import type { CompanyRuntime } from '../../runtime/company-events'
+import { companyEventBus } from '../../runtime/event-bus'
 import { AssetImage } from './AssetImage'
+
+// 事件总线接线：模块级常量保证引用稳定，满足 useSyncExternalStore 的要求。
+const subscribeBus = (listener: () => void) => companyEventBus.subscribe(listener)
+const readBus = () => companyEventBus.snapshot()
 
 // 顶栏经营指标（需求文档四十八条：状态必须来自真实 Runtime，不许写假 KPI）。
 // 「在线」这个词在这里从来就不成立：本插件不持有员工进程，也没有任何心跳，
@@ -34,8 +41,20 @@ export function CompanyHeader(props: {
   onMarket: () => void
   /** 打开公司设置中心（员工 / 模型 / 插件 / 通讯 / 存储 / 安全）。 */
   onSettings?: () => void
+  /** 不传则自动读全局 Company Event Bus；总线为空时才回落到 stats 里的派活推导数。 */
+  runtime?: CompanyRuntime | null
 }) {
   const { companyName, stats, now, onMarket, onSettings } = props
+  const busRuntime = useSyncExternalStore(subscribeBus, readBus, readBus)
+  const runtime = props.runtime !== undefined ? props.runtime : busRuntime
+  // 顶栏与办公室 / 左栏 / 右栏读同一份 CompanyRuntime、走同一个 companyPresence，
+  // 所以「工作中 / 卡住」四处必然是同一个数。总线是空的才用 stats 里的派活推导数兜底。
+  const presence = companyPresence([], runtime)
+  const live = presence.eventDriven
+  const running = live ? presence.counts.working : stats.running
+  const done = live ? presence.counts.done : stats.done
+  const wait = live ? presence.counts.blocked : stats.wait
+  const online = live ? presence.counts.active : stats.online
   const title = companyName.split('·')[0].trim()
   const subtitle = companyName.includes('·') ? companyName.split('·').slice(1).join('·').trim() : 'AI 员工总部'
   const clock = now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
@@ -51,11 +70,14 @@ export function CompanyHeader(props: {
       h('div', { className: 'cy9-stat' }, h('b', null, uptimeText(stats.since)), h('span', null, '运行时长')),
       h('div', {
         className: 'cy9-stat hot',
-        title: `活跃 ${stats.online} = 本会话有真实事件（非待命）的员工数；在册 ${stats.total} = 配置名册人数。工作台没有员工心跳，无法显示「在线」。`,
-      }, h('b', null, `${stats.online}/${stats.total}`), h('span', null, '活跃/在册')),
-      h('div', { className: 'cy9-stat hot' }, h('b', null, String(stats.running)), h('span', null, '工作中')),
-      h('div', { className: 'cy9-stat' }, h('b', null, String(stats.done)), h('span', null, '已交付')),
-      h('div', { className: 'cy9-stat warn' }, h('b', null, String(stats.wait)), h('span', null, '卡住')),
+        title: `活跃 ${online} = 本会话有真实事件（非待命）的员工数；在册 ${stats.total} = 配置名册人数。工作台没有员工心跳，无法显示「在线」。`,
+      }, h('b', null, `${online}/${stats.total}`), h('span', null, '活跃/在册')),
+      h('div', { className: 'cy9-stat hot', title: '在会议室的人不计入这里，办公室顶部「现在」那一行会单独报会议人数。' }, h('b', null, String(running)), h('span', null, '工作中')),
+      h('div', { className: 'cy9-stat' }, h('b', null, String(done)), h('span', null, '已交付')),
+      h('div', {
+        className: 'cy9-stat warn',
+        title: '卡住 = 工具报错，或员工回复里出现明确的待决信号（等你确认 / 缺凭据 / 权限不足）。具体是谁看办公室顶部「现在」那一行。',
+      }, h('b', null, String(wait)), h('span', null, '卡住')),
     ),
     h('div', { className: 'cy9-header-right' },
       h('div', { className: 'cy9-clock' }, h('b', null, clock), h('span', null, '实时经营中')),

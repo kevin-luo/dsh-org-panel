@@ -23,6 +23,7 @@ function normalize(text: string) { return text.trim().replace(/\s+/g, ' ').toLow
 function unique(values: unknown[]): string[] { return Array.from(new Set(values.map(String).map((value) => value.trim()).filter(Boolean))) }
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function trimText(value: unknown): string | undefined { const out = typeof value === 'string' ? value.trim() : ''; return out || undefined }
+function clip(value: unknown, max: number): string { const out = String(value ?? '').replace(/\s+/g, ' ').trim(); return out.length > max ? out.slice(0, max) + '…' : out }
 
 // node-shims.d.ts 只声明了 writeFile(path, data, encoding)，这里要用 wx 独占标志，做一次窄化转换。
 const writeFileExclusive = writeFile as unknown as (path: string, data: string, options: { encoding: string; flag: string }) => Promise<void>
@@ -126,10 +127,102 @@ export type ModelBindingInput = {
   status?: ModelBindingStatus
 }
 
+// ---------------------------------------------------------------------------
+// 记忆注入台账（需求文档六十条前两句：「越来越懂我」必须有可见证据）
+//
+// 记忆确实写进了 evolution.json，digest 也确实进了子代理 persona —— 但老板在回答现场
+// 看不到任何「这次用到了历史」的痕迹，于是无法把「这次没踩坑」归因给系统。
+// 这一段就是把「真实注入过什么」记成台账，让前端能在员工消息旁摆出真东西。
+//
+// 三条底线：
+//   1. 只记**真的写进了那段 prompt** 的 id。算出来没发出去的（例如 staff_chat 走了另一条分支、
+//      followup 派活失败）一律不记。
+//   2. 注入 0 条就是空数组，不是「找不到就补几条相关的」。前端据此不显示 chip。
+//   3. 台账只活在本进程内存里：evolution.json 的结构由 persistence/types.ts + migrations.ts 定义，
+//      往里塞新字段会被读盘时的 sanitize 丢掉，那才是真正的假持久化。
+//      因此进程重启后台账为空 —— 前端表现为「没有 chip」，而不是「显示 0 条」，
+//      任何时候都不会对老板宣称一件没发生的事。
+// ---------------------------------------------------------------------------
+
+/** 一次真实注入的登记入参。 */
+export type MemoryInjectionInput = {
+  employeeId: string
+  /** 触发这次注入的任务原话；只留摘要，用于让老板认出是哪一次。 */
+  query?: string
+  memoryIds: string[]
+  reflectionIds: string[]
+  /** 履历 id；注入发生在开单之前时先缺席，随后由 attachMemoryInjection 补上。 */
+  taskId?: string
+  /** 子代理 childId：前端把「这条员工消息」和「这次注入」对上号的唯一锚点。 */
+  childId?: string
+  injectedAt?: number
+}
+
+export type MemoryInjectionRecord = {
+  id: string
+  employeeId: string
+  query: string
+  injectedAt: number
+  memoryIds: string[]
+  reflectionIds: string[]
+  taskId?: string
+  childId?: string
+}
+
+/** 证据条目：由台账里的 id 回查真实条目得到。查不到的 id 直接不出现，绝不用占位条目凑数。 */
+export type MemoryEvidenceItem = {
+  id: string
+  type: 'memory' | 'reflection'
+  text: string
+  createdAt: number
+  updatedAt?: number
+  kind?: MemoryKind
+  outcome?: TaskOutcome
+  tags?: string[]
+  /** 来源任务：复盘自带 task；记忆没有结构化来源，就是 undefined（UI 显示「未知」）。 */
+  sourceTask?: string
+}
+
+/** 一次注入的完整证据视图。missing = 台账里有 id、档案里已经查不到的条数（被 STORE_LIMITS 淘汰）。 */
+export type MemoryEvidenceView = {
+  injection: MemoryInjectionRecord
+  items: MemoryEvidenceItem[]
+  missing: number
+}
+
+/** digest 的证据版返回值。text 与 digest() 逐字一致。 */
+export type MemoryDigest = {
+  text: string
+  /** 这一次**真正写进 text** 的记忆 id。 */
+  memoryIds: string[]
+  /** 这一次**真正写进 text** 的复盘 id。 */
+  reflectionIds: string[]
+}
+
+export type MemoryPageQuery = {
+  kind?: MemoryKind
+  offset?: number
+  limit?: number
+}
+
+export type MemoryPageResult = {
+  items: EmployeeMemory[]
+  /** 该分组的真实总条数。 */
+  total: number
+  hasMore: boolean
+  offset: number
+  limit: number
+}
+
+/** 台账在内存里最多留多少条。够前端翻完当前会话，也不会让长跑进程越攒越大。 */
+const INJECTION_LIMIT = 300
+
 export class EvolutionStore {
   private state: StoreFileV2 = { version: 2, employees: {} }
   private loadPromise: Promise<void> | null = null
   private queue: Promise<void> = Promise.resolve()
+  /** 本进程内的记忆注入台账，不落盘（原因见 MemoryInjectionRecord 上方注释）。 */
+  private injections: MemoryInjectionRecord[] = []
   readonly filePath: string
   /** 最近一次读盘时若发生了 V1→V2 升级，这里是备份文件路径，供 host 打日志。 */
   migratedFrom: number | null = null
@@ -357,6 +450,17 @@ export class EvolutionStore {
   }
 
   async digest(employeeId: string, query = '', memoryLimit = 6): Promise<string> {
+    return (await this.digestWithEvidence(employeeId, query, memoryLimit)).text
+  }
+
+  /**
+   * digest 的证据版：digest() 现在就是它的一层薄包装，两边永远不会漂移。
+   *
+   * 相比 V1 多注入了一段「踩过的坑」——复盘自带 task 与 outcome，这是同一条经验
+   * 落成 lesson 记忆时丢掉的上下文，也正是需求文档六十条第二句要的东西。
+   * 返回的两组 id 是**真的写进了 text** 的那些；调用方只有把 text 发出去了才可以记账。
+   */
+  async digestWithEvidence(employeeId: string, query = '', memoryLimit = 6, reflectionLimit = 3): Promise<MemoryDigest> {
     const profile = await this.profile(employeeId)
     const memories = query ? await this.recall(employeeId, query, memoryLimit) : profile.memories.slice().sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt).slice(0, memoryLimit)
     const topSkills = profile.skills.slice().sort((a, b) => b.level - a.level || b.updatedAt - a.updatedAt).slice(0, 8)
@@ -370,7 +474,93 @@ export class EvolutionStore {
     const recentTasks = profile.taskHistory.filter((item) => item.completedAt).slice(-3).reverse()
     if (recentTasks.length) lines.push('最近履历：' + recentTasks.map((item) => `${item.title}·${item.outcome}`).join('；'))
     if (memories.length) lines.push('相关长期记忆：\n' + memories.map((memory) => `- [${memory.kind}] ${memory.text}`).join('\n'))
-    return lines.join('\n')
+    const reflections = profile.reflections.filter((item) => item.lesson).slice(-clamp(reflectionLimit, 0, 8)).reverse()
+    if (reflections.length) lines.push('踩过的坑（历史复盘，遇到同类任务先避开）：\n' + reflections.map((item) => `- [${item.outcome}] ${item.task}：${item.lesson}`).join('\n'))
+    return {
+      text: lines.join('\n'),
+      memoryIds: memories.map((item) => item.id),
+      reflectionIds: reflections.map((item) => item.id),
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // 记忆注入台账（只读查询 + 记账，不落盘，见文件上方 MemoryInjectionRecord 的注释）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 登记一次**已经真实发出去**的注入。注入 0 条也照样登记（前端据此显示「这次没引用历史」，
+   * 而不是显示一个 0 条的 chip），但绝不为了让台账好看而补条目。
+   */
+  recordMemoryInjection(input: MemoryInjectionInput): MemoryInjectionRecord {
+    const record: MemoryInjectionRecord = {
+      id: id('inj'),
+      employeeId: String(input.employeeId || '').trim(),
+      query: trimText(input.query) ? clip(String(input.query), 200) : '',
+      injectedAt: Number(input.injectedAt) > 0 ? Number(input.injectedAt) : now(),
+      memoryIds: unique(input.memoryIds || []),
+      reflectionIds: unique(input.reflectionIds || []),
+      taskId: trimText(input.taskId),
+      childId: trimText(input.childId),
+    }
+    this.injections.push(record)
+    if (this.injections.length > INJECTION_LIMIT) this.injections = this.injections.slice(-INJECTION_LIMIT)
+    return clone(record)
+  }
+
+  /** 按员工 / 任务 / 子代理查台账，时间倒序。什么都不传就是全量最近若干条。 */
+  memoryInjections(options: { employeeId?: string; taskId?: string; childId?: string; limit?: number } = {}): MemoryInjectionRecord[] {
+    const rows = this.injections.filter((item) =>
+      (!options.employeeId || item.employeeId === options.employeeId)
+      && (!options.taskId || item.taskId === options.taskId)
+      && (!options.childId || item.childId === options.childId))
+    return clone(rows.slice(-clamp(Number(options.limit) || 20, 1, INJECTION_LIMIT)).reverse())
+  }
+
+  /**
+   * 把一条台账的 id 回查成真实条目。查不到的 id 只计进 missing，绝不合成条目 ——
+   * 「档案里已经没有这条了」和「这条是这样的」是两件事，不能混。
+   */
+  async memoryEvidence(injectionId: string): Promise<MemoryEvidenceView | null> {
+    const record = this.injections.find((item) => item.id === injectionId)
+    if (!record) return null
+    await this.ensureLoaded()
+    const profile = this.profileRef(record.employeeId)
+    const items: MemoryEvidenceItem[] = []
+    let missing = 0
+    for (const memoryId of record.memoryIds) {
+      const memory = profile.memories.find((item) => item.id === memoryId)
+      if (!memory) { missing += 1; continue }
+      items.push({
+        id: memory.id, type: 'memory', text: memory.text, createdAt: memory.createdAt, updatedAt: memory.updatedAt,
+        kind: memory.kind, tags: memory.tags.slice(),
+      })
+    }
+    for (const reflectionId of record.reflectionIds) {
+      const reflection = profile.reflections.find((item) => item.id === reflectionId)
+      if (!reflection) { missing += 1; continue }
+      items.push({
+        id: reflection.id, type: 'reflection', text: reflection.lesson, createdAt: reflection.createdAt,
+        outcome: reflection.outcome, sourceTask: reflection.task || undefined,
+      })
+    }
+    return { injection: clone(record), items, missing }
+  }
+
+  /**
+   * 记忆分页（需求文档四十四条：不要一次加载全部 120 条）。
+   * 排序与 CompanyStore.employeeSnapshot 的 recentMemories 逐字一致（importance desc, updatedAt desc），
+   * 这样前端拿快照里那几条当第一页、用 offset 续着翻，不会跳条也不会重复。
+   */
+  async memoryPage(employeeId: string, query: MemoryPageQuery = {}): Promise<MemoryPageResult> {
+    await this.ensureLoaded()
+    const rows = this.profileRef(employeeId).memories
+      .filter((item) => !query.kind || item.kind === query.kind)
+      .slice()
+      .sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
+    const offset = clamp(Math.floor(Number(query.offset) || 0), 0, STORE_LIMITS.memories)
+    const limit = clamp(Math.floor(Number(query.limit) || 10), 1, 30)
+    const items = rows.slice(offset, offset + limit)
+    return { items: clone(items), total: rows.length, hasMore: offset + items.length < rows.length, offset, limit }
   }
 
   // -------------------------------------------------------------------------

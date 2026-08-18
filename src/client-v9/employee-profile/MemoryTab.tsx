@@ -1,12 +1,13 @@
 // 员工档案 · 记忆（需求文档四十四条）：按 用户偏好 / 项目事实 / 事实 / 工作流 / 经验 / 关系 分组，分页加载。
 // 硬约束：不要一次拉 120 条。快照只带回最近的少量记忆，其余靠 loadMemories 按页取；
 // 没有分页加载器时如实说明「还有 N 条未加载」，绝不假装已经全部显示。
-import { createElement as h, useState } from 'react'
+import { createElement as h, useMemo, useState } from 'react'
 import { formatAgo } from '../selectors'
 import type { EmployeeMemory, EmployeeSnapshot, MemoryKind } from '../../persistence/types'
+import { createMemoryLoader, MEMORY_PAGE_SIZE } from '../memory-evidence'
 import type { MemoryLoader } from './EmployeeProfile'
 
-const PAGE_SIZE = 10
+const PAGE_SIZE = MEMORY_PAGE_SIZE
 
 /** 分组顺序照抄文档，末尾补上持久层实际存在但文档没列的 fact。 */
 const KIND_ORDER: MemoryKind[] = ['preference', 'project', 'workflow', 'lesson', 'relationship', 'fact']
@@ -26,7 +27,14 @@ export function MemoryTab(props: {
   snapshot: EmployeeSnapshot | null
   loadMemories?: MemoryLoader
 }) {
-  const { employeeId, snapshot, loadMemories } = props
+  const { employeeId, snapshot } = props
+  // 调用方给了加载器就用它；没给就自己按 `/org-panel` 的 memory/page 现造一个。
+  // 通道不存在时 createMemoryLoader 返回 null —— 回落到「只翻快照里带回来的那几条」这条老路，
+  // 并如实说明还有多少条没下发，绝不假装已经全部显示（文档四十四条）。
+  const loadMemories = useMemo<MemoryLoader | undefined>(
+    () => props.loadMemories || createMemoryLoader() || undefined,
+    [props.loadMemories],
+  )
   const counts = snapshot?.memoryCounts
   const [kind, setKind] = useState<MemoryKind>(() => KIND_ORDER.find((item) => (counts?.[item] || 0) > 0) || 'preference')
   const [extra, setExtra] = useState<Record<string, EmployeeMemory[]>>({})

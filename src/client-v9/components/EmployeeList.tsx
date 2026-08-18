@@ -2,14 +2,22 @@
 // 这里以前调 selectors.lineOf(staff, status, tick)：tick 每 2.4 秒 +1，于是每位员工的
 // 「当前活动」在几句预置台词之间轮播 —— 那是编造的活动描述，看上去像员工在忙，其实什么都没发生。
 // 现在只有两种来源：① 真实派活记录里的任务描述；② 没有任务时的一句静态事实。
-import { createElement as h, useMemo, useState } from 'react'
+import { createElement as h, useMemo, useState, useSyncExternalStore } from 'react'
 import type { Delegation, LegacyStatus, StaffDef } from '../types'
 import { STATUS_LABEL } from '../types'
 import { staffThumb } from '../asset-map'
-import { clip } from '../selectors'
+import type { PresenceFallback } from '../selectors'
+import { clip, companyPresence } from '../selectors'
+import type { CompanyRuntime } from '../../runtime/company-events'
+import { companyEventBus } from '../../runtime/event-bus'
 import { AssetImage } from './AssetImage'
 
 type Filter = 'all' | LegacyStatus
+
+// 事件总线接线：模块级常量保证引用稳定，满足 useSyncExternalStore 的要求。
+// 左栏与顶栏 / 办公室 / 右栏读的是同一份 CompanyRuntime，四处不会再各说各话。
+const subscribeBus = (listener: () => void) => companyEventBus.subscribe(listener)
+const readBus = () => companyEventBus.snapshot()
 
 /** 没有真实任务时显示什么：只陈述「面板知道什么」，不描述员工在干什么。 */
 const NO_TASK_LINE: Record<LegacyStatus, string> = {
@@ -19,9 +27,15 @@ const NO_TASK_LINE: Record<LegacyStatus, string> = {
   wait: '暂无原因说明',
 }
 
-/** 员工卡片第二行。task 为空时绝不编活动描述。 */
-export function employeeLine(task: Delegation | undefined, status: LegacyStatus): string {
-  const desc = task ? clip(task.desc, 20) : ''
+/**
+ * 员工卡片第二行。task 为空时绝不编活动描述。
+ * reason 是真实的卡住原句（来自 runtime.block.reason），优先于任务描述显示 ——
+ * 「卡在哪」比「派了什么活」更该第一眼看到。
+ * staff_chat 的 desc 是老板自己刚说的那句话，不是员工在干的事，所以不拿它当活动描述。
+ */
+export function employeeLine(task: Delegation | undefined, status: LegacyStatus, reason?: string): string {
+  if (status === 'wait' && reason) return clip(reason, 24)
+  const desc = task && task.tool !== 'staff_chat' ? clip(task.desc, 20) : ''
   return desc || NO_TASK_LINE[status] || NO_TASK_LINE.idle
 }
 const FILTERS: Array<{ id: Filter; label: string }> = [
@@ -42,19 +56,32 @@ export function EmployeeList(props: {
   tick?: number
   onSelect: (staffId: string) => void
   onMention: (staff: StaffDef) => void
+  /** 不传则自动读全局 Company Event Bus；总线为空时才回落到 statuses。 */
+  runtime?: CompanyRuntime | null
 }) {
   const { staff, statuses, tasksMap, activeStaffId, onSelect, onMention } = props
+  const busRuntime = useSyncExternalStore(subscribeBus, readBus, readBus)
+  const runtime = props.runtime !== undefined ? props.runtime : busRuntime
   const [filter, setFilter] = useState<Filter>('all')
+  const presence = useMemo(() => {
+    const fallback: Record<string, PresenceFallback> = {}
+    for (const item of staff) {
+      const tasks = tasksMap[item.id] || []
+      const task = tasks.find((entry) => entry.running) || tasks[tasks.length - 1]
+      fallback[item.id] = { status: statuses[item.id] || 'idle', tool: task?.tool }
+    }
+    return companyPresence(staff.map((item) => item.id), runtime, fallback)
+  }, [staff, statuses, tasksMap, runtime])
   const groups = useMemo(() => {
     const map = new Map<string, StaffDef[]>()
     for (const item of staff) {
-      const status = statuses[item.id] || 'idle'
+      const status = presence.legacy[item.id] || 'idle'
       if (filter !== 'all' && status !== filter) continue
       const department = item.department || '其他部门'
       map.set(department, [...(map.get(department) || []), item])
     }
     return [...map.entries()]
-  }, [staff, statuses, filter])
+  }, [staff, presence, filter])
 
   return h('aside', { className: 'cy9-left' },
     h('div', { className: 'cy9-left-head' }, h('b', null, '员工通讯录'), h('span', null, `${staff.length} 位真实子代理`)),
@@ -65,12 +92,13 @@ export function EmployeeList(props: {
       groups.map(([department, employees]) => h('section', { key: department, className: 'cy9-department' },
         h('div', { className: 'cy9-department-title' }, department, h('span', null, employees.length)),
         employees.map((item) => {
-          const status = statuses[item.id] || 'idle'
+          const status = presence.legacy[item.id] || 'idle'
           const task = currentTask(tasksMap[item.id])
-          const taskLine = employeeLine(task, status)
+          const taskLine = employeeLine(task, status, presence.reasons[item.id])
           return h('button', {
             key: item.id, type: 'button',
             className: `cy9-emp${activeStaffId === item.id ? ' active' : ''}`,
+            'data-status': presence.status[item.id] || 'idle',
             onClick: () => onSelect(item.id), onDoubleClick: () => onMention(item), title: '单击定位，双击直接 @ 本人',
           },
             h('div', { className: 'cy9-emp-avatar' }, h(AssetImage, { src: staffThumb(item.id), alt: item.name, fallback: item.name })),

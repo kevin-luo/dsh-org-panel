@@ -3,6 +3,8 @@ import { EMPLOYEE_BLUEPRINTS, employeeById } from './org-blueprints'
 import { EvolutionStore } from './persistence/evolution-store'
 import { CompanyStore } from './persistence/company-store'
 import { readCtxService } from './runtime/ctx-service'
+import { memoryEndpoints } from './host/org-panel-memory'
+import type { EndpointMap } from './host/org-panel-rpc'
 import { evolutionLevel, type EmployeeIdentity, type MemoryKind, type TaskOutcome, type TaskSource } from './persistence/types'
 
 export type Employee = {
@@ -27,7 +29,8 @@ const STAFF_TOOL = 'staff_chat'
 const STAFF_MEETING_TOOL = 'staff_meeting'
 // persona 内容变了就必须 +1：label 里带着它，旧的持续会话不会被复用，
 // 否则老员工会话里还留着「success=true 就算学会」这条已经作废的规则。
-const EMPLOYEE_PERSONA_REVISION = 7
+// v8：记忆摘要里多了一段「踩过的坑（历史复盘）」，旧会话里没有它，必须换一批 child。
+const EMPLOYEE_PERSONA_REVISION = 8
 const MEMORY_TOOL = 'staff_memory_recall'
 const REMEMBER_TOOL = 'staff_memory_remember'
 const SKILL_TOOL = 'staff_skill_learn'
@@ -192,10 +195,17 @@ async function ensureSeedSkills(store: EvolutionStore, employee: Employee) {
   }
 }
 
-async function employeePersona(employee: Employee, store: EvolutionStore, task = ''): Promise<string> {
+/**
+ * 一次待发出的 persona：文本 + 这次真正写进文本的记忆/复盘 id。
+ * 记账刻意**不在这里做** —— persona 造好不等于发出去了（subagents.start 可能抛）。
+ * 只有真的把它交给子代理的那个调用方，才有资格调 recordMemoryInjection。
+ */
+type PersonaBuild = { text: string; query: string; memoryIds: string[]; reflectionIds: string[] }
+
+async function employeePersona(employee: Employee, store: EvolutionStore, task = ''): Promise<PersonaBuild> {
   await ensureSeedSkills(store, employee)
-  const digest = await store.digest(employee.id, task, 6)
-  return [
+  const digest = await store.digestWithEvidence(employee.id, task, 6)
+  const text = [
     `你是“${employee.name}”，赛博公司的${employee.role}。`,
     employee.brief,
     `你的基础能力：${employee.capabilities.join('、') || '按岗位完成任务'}。`,
@@ -213,8 +223,9 @@ async function employeePersona(employee: Employee, store: EvolutionStore, task =
     '6. 回复使用自然、简洁的中文；不要把私有记忆摘要原样复述给老板，除非它与回答直接相关。',
     '',
     '【你的长期记忆摘要】',
-    digest,
+    digest.text,
   ].join('\n')
+  return { text, query: task, memoryIds: digest.memoryIds, reflectionIds: digest.reflectionIds }
 }
 
 function buildDispatcherPrompt(employees: Employee[]): string {
@@ -285,6 +296,13 @@ export type OrgPanelCore = {
   company: CompanyStore
   employees: Employee[]
   roster: EmployeeIdentity[]
+  /**
+   * 记忆相关的 `/org-panel` 端点（memory/evidence + memory/page）。
+   * 挂在 core 上而不是 org-panel-read.ts 里，是因为它们读的是**注入台账**——
+   * 那份台账属于本 core 实例的运行时状态，跟着 store 一起走，不该由别处再造一次。
+   * host-v3 把它并进频道端点表。
+   */
+  memoryEndpoints: EndpointMap
   snapshot(options?: { taskLimit?: number; memoryLimit?: number }): Promise<unknown>
   /** 给某位员工派一条消息并拿回他本人的真实回复（复用 staff_chat 的子代理链路）。 */
   dispatch(input: StaffDispatchInput): Promise<StaffDispatchOutcome>
@@ -390,16 +408,23 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
    * 唯一一处「真实起一个员工子代理并等它跑完」的实现。
    * staff_chat 的一次性分支、staff_meeting 的每一轮发言、外部渠道派活全部复用它，不存在第二份。
    */
-  const runEmployeeOnce = async (parent: any, employee: Employee, options: { label: string; prompt: string; personaTask?: string; signal: AbortSignal }): Promise<EmployeeRun> => {
+  const runEmployeeOnce = async (parent: any, employee: Employee, options: { label: string; prompt: string; personaTask?: string; signal: AbortSignal; taskId?: string | null }): Promise<EmployeeRun> => {
     const provider = selectProvider(subagents, false)
     if (!provider) throw new Error('没有可用的 DSH 子代理 provider，无法启动真实员工')
+    const persona = await employeePersona(employee, store, options.personaTask ?? options.prompt)
     const run = await subagents.start(provider, {
       label: options.label,
       prompt: [{ type: 'text', text: options.prompt }],
       parent,
-      persona: await employeePersona(employee, store, options.personaTask ?? options.prompt),
+      persona: persona.text,
       maxDepth: 3,
       signal: options.signal,
+    })
+    // 子代理真的起来了 ⇒ 这段 persona 连同里面那批记忆确实发出去过，这时才记账（文档六十条）。
+    // run.id 就是前端在 staff_chat 结果标记 / 结算事件里看到的 childId，chip 靠它认领这条消息。
+    store.recordMemoryInjection({
+      employeeId: employee.id, query: persona.query, memoryIds: persona.memoryIds, reflectionIds: persona.reflectionIds,
+      taskId: options.taskId || undefined, childId: String(run.id ?? '') || undefined,
     })
     try {
       const result = await run.result
@@ -667,8 +692,8 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
       const parentId = String(parent.session.id)
       const source = { kind: 'coordinator', form: 'relay', senderSessionId: parent.session.id }
       await ensureSeedSkills(store, employee)
-      const memoryDigest = await store.digest(employee.id, message, 5)
-      const enrichedMessage = `[系统私有上下文：以下是你的长期记忆摘要，只用于帮助本次工作，不要机械复述。]\n${memoryDigest}\n\n[老板原话]\n${message}`
+      const memoryDigest = await store.digestWithEvidence(employee.id, message, 5)
+      const enrichedMessage = `[系统私有上下文：以下是你的长期记忆摘要，只用于帮助本次工作，不要机械复述。]\n${memoryDigest.text}\n\n[老板原话]\n${message}`
 
       let childId = await resolveChild(parentId, employee, signal)
       if (childId) {
@@ -683,6 +708,11 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
           await closeTask(taskId, employee.id, { outcome: 'failed', summary: `派活失败：${describeError(error)}` })
           throw error
         }
+        // enrichedMessage 真的送出去了，这批记忆才算注入过（派活失败的那一路一条都不记）。
+        store.recordMemoryInjection({
+          employeeId: employee.id, query: message, memoryIds: memoryDigest.memoryIds, reflectionIds: memoryDigest.reflectionIds,
+          taskId: taskId || undefined, childId,
+        })
         trackContinuable(childId, employee.id, taskId, handle)
         return { kind: 'continuable', staffId: employee.id, staffName: employee.name, subagentId: String(childId), reply: '' }
       }
@@ -690,12 +720,14 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
       const continuableProvider = selectProvider(subagents, true)
       if (continuableProvider) {
         const taskId = await openTask(employee, { title: message, description: message, source: 'web' })
+        // persona 提前造好：记账要用它带回来的那批 id，而且只有 startContinuable 真成功了才记。
+        const persona = await employeePersona(employee, store, message)
         let started: any
         try {
           started = await subagents.startContinuable({
             provider: continuableProvider,
             label: employeeLabel(employee),
-            request: { prompt: [{ type: 'text', text: message }], parent, persona: await employeePersona(employee, store, message), maxDepth: 3 },
+            request: { prompt: [{ type: 'text', text: message }], parent, persona: persona.text, maxDepth: 3 },
             signal,
           })
         } catch (error) {
@@ -703,6 +735,10 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
           throw error
         }
         childId = String(started.childId)
+        store.recordMemoryInjection({
+          employeeId: employee.id, query: persona.query, memoryIds: persona.memoryIds, reflectionIds: persona.reflectionIds,
+          taskId: taskId || undefined, childId,
+        })
         childCache.set(`${parentId}:${employee.id}`, childId)
         trackContinuable(childId, employee.id, taskId, started)
         return { kind: 'continuable', staffId: employee.id, staffName: employee.name, subagentId: childId, reply: '' }
@@ -711,7 +747,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
       const taskId = await openTask(employee, { title: message, description: message, source: 'web' })
       let run: EmployeeRun
       try {
-        run = await runEmployeeOnce(parent, employee, { label: employeeLabel(employee), prompt: message, signal })
+        run = await runEmployeeOnce(parent, employee, { label: employeeLabel(employee), prompt: message, signal, taskId })
       } catch (error) {
         await closeTask(taskId, employee.id, { outcome: 'failed', summary: `子代理异常：${describeError(error)}` })
         throw error
@@ -728,7 +764,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
   const runMeetingTurn = async (parent: any, employee: Employee, prompt: string, signal: AbortSignal, taskId: string | null): Promise<EmployeeRun> => {
     let run: EmployeeRun
     try {
-      run = await runEmployeeOnce(parent, employee, { label: `赛博公司会议:${employee.id}:${employee.name}`, prompt, signal })
+      run = await runEmployeeOnce(parent, employee, { label: `赛博公司会议:${employee.id}:${employee.name}`, prompt, signal, taskId })
     } catch (error) {
       await closeTask(taskId, employee.id, { outcome: 'failed', summary: `会议发言异常：${describeError(error)}` })
       throw error
@@ -822,7 +858,7 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
     const taskId = await openTask(employee, { title: text, description: text, source, channelId: input.channelId })
     let run: EmployeeRun
     try {
-      run = await runEmployeeOnce(parent, employee, { label: `赛博公司外部消息:${employee.id}:${employee.name}`, prompt, personaTask: text, signal })
+      run = await runEmployeeOnce(parent, employee, { label: `赛博公司外部消息:${employee.id}:${employee.name}`, prompt, personaTask: text, signal, taskId })
     } catch (error) {
       const message = describeError(error)
       await closeTask(taskId, employee.id, { outcome: 'failed', summary: `子代理异常：${message}` })
@@ -863,5 +899,10 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
     if (store.writeBlocked) ctx?.logger?.error?.(`dsh-org-panel: ${store.writeBlocked}`)
   }).catch((error: unknown) => ctx?.logger?.warn?.(`dsh-org-panel: evolution store 初始化失败：${describeError(error)}`))
 
-  return { store, company, employees, roster, snapshot, dispatch, bindAgent: (agent: unknown) => { if (agent) lastAgent = agent }, hasAgent: () => !!resolveAgent() }
+  return {
+    store, company, employees, roster, snapshot, dispatch,
+    memoryEndpoints: memoryEndpoints({ store, roster }),
+    bindAgent: (agent: unknown) => { if (agent) lastAgent = agent },
+    hasAgent: () => !!resolveAgent(),
+  }
 }

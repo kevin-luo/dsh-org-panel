@@ -4,7 +4,8 @@
 import { createElement as h, useMemo, useState } from 'react'
 import type { Delegation, GrowthEvent, MarketPluginItem, SkillQueueItem, StaffDef } from '../types'
 import { staffThumb } from '../asset-map'
-import { clip, formatAgo, formatDuration, staffOf } from '../selectors'
+import type { DelegationWithBlock, PresenceFallback } from '../selectors'
+import { clip, companyPresence, formatAgo, formatDuration, staffOf } from '../selectors'
 import { EMPLOYEE_RUNTIME_LABEL, type CompanyRuntime } from '../../runtime/company-events'
 import type { CompanySnapshot, PluginStatus } from '../../persistence/types'
 import { installProfileStyles, useCompanyRuntime, useCompanySnapshot } from '../employee-profile/EmployeeProfile'
@@ -33,7 +34,7 @@ function runtimeTasks(runtime: CompanyRuntime | null): RailTask[] {
   return rows.sort((a, b) => Number(b.state === 'running') - Number(a.state === 'running')).slice(0, 6)
 }
 
-function delegationTasks(delegations: Delegation[], now: number): RailTask[] {
+function delegationTasks(delegations: readonly DelegationWithBlock[], now: number): RailTask[] {
   return delegations
     .filter((item) => item.running || item.endTime)
     .sort((a, b) => Number(b.running) - Number(a.running) || (b.startTime || 0) - (a.startTime || 0))
@@ -42,15 +43,18 @@ function delegationTasks(delegations: Delegation[], now: number): RailTask[] {
       key: task.callId,
       staffId: task.staffId,
       title: clip(task.desc, 24),
-      meta: task.running ? formatDuration(now - (task.startTime || now)) || '刚开始' : formatDuration(task.duration),
-      state: task.running ? 'running' : task.isError ? 'wait' : 'done',
+      // 卡住的那条优先显示真实原句，「等了多久」这时候不是老板想知道的事。
+      meta: task.blocked ? task.blocked.reason
+        : task.running ? formatDuration(now - (task.startTime || now)) || '刚开始'
+          : formatDuration(task.duration),
+      state: task.running ? 'running' : (task.isError || task.blocked) ? 'wait' : 'done',
     }))
 }
 
 export function RightRail(props: {
   staff: StaffDef[]
   stats: RailStats
-  delegations: Delegation[]
+  delegations: readonly DelegationWithBlock[]
   growth: GrowthEvent[]
   skills: SkillQueueItem[]
   plugins: MarketPluginItem[]
@@ -78,6 +82,21 @@ export function RightRail(props: {
     const live = runtimeTasks(runtime)
     return live.length ? live : delegationTasks(delegations, now)
   }, [runtime, delegations, now])
+
+  // 「公司状态」那四个数与顶栏 / 办公室 / 左栏同源：同一份 CompanyRuntime → 同一个 companyPresence。
+  // 总线为空时才回落到 stats 里的派活推导数。
+  const presence = useMemo(() => {
+    const fallback: Record<string, PresenceFallback> = {}
+    for (const item of staff) {
+      const owned = delegations.filter((task) => task.staffId === item.id || task.roleId === item.id)
+      const task = owned.find((entry) => entry.running) || owned[owned.length - 1]
+      if (task) fallback[item.id] = { status: task.running ? 'running' : (task.isError || task.blocked) ? 'wait' : 'done', tool: task.tool }
+    }
+    return companyPresence(staff.map((item) => item.id), runtime, fallback)
+  }, [staff, runtime, delegations])
+  const counts = presence.eventDriven
+    ? { running: presence.counts.working, done: presence.counts.done, wait: presence.counts.blocked, idle: presence.counts.idle }
+    : { running: stats.running, done: stats.done, wait: stats.wait, idle: stats.idle }
 
   // 成长：先是持久化的等级榜（空 Session 也有），再接本次会话真实发生的成长事件。
   const ranking = useMemo(() => (snapshot ? snapshot.employees.slice().sort((a, b) => b.xp - a.xp).slice(0, 8) : []), [snapshot])
@@ -127,10 +146,10 @@ export function RightRail(props: {
     h('section', { className: 'cy9-card cy9-status-card' },
       h('div', { className: 'cy9-card-head' }, h('b', null, '公司状态'), h('span', { className: sessionRunning ? 'live' : '' }, sessionRunning ? 'LIVE' : 'STANDBY'), h('button', { type: 'button', onClick: onClose }, '收起')),
       h('div', { className: 'cy9-status-grid' },
-        h('div', null, h('b', null, String(stats.running)), h('span', null, '工作中')),
-        h('div', null, h('b', null, String(stats.done)), h('span', null, '已交付')),
-        h('div', null, h('b', null, String(stats.wait)), h('span', null, '卡住')),
-        h('div', null, h('b', null, String(stats.idle)), h('span', null, '待命')),
+        h('div', { title: '在会议室的人不计入这里，办公室顶部「现在」那一行会单独报会议人数。' }, h('b', null, String(counts.running)), h('span', null, '工作中')),
+        h('div', null, h('b', null, String(counts.done)), h('span', null, '已交付')),
+        h('div', { title: '卡住 = 工具报错，或员工回复里出现明确的待决信号。' }, h('b', null, String(counts.wait)), h('span', null, '卡住')),
+        h('div', null, h('b', null, String(counts.idle)), h('span', null, '待命')),
       ),
       h('div', { className: 'cy9-rail-sub' },
         h('div', null, h('b', null, totals ? String(totals.tasks) : '—'), h('span', null, '累计任务')),

@@ -16,6 +16,7 @@ import type { PluginRuntimeHandle } from '../capabilities/plugin-runtime'
 import type { CommunicationManager } from '../integrations/im/manager'
 import type { ModelGateway } from '../models/gateway'
 import { MODEL_CAPABILITIES, type ModelCapability } from '../models/types'
+import { companyEventBus, type CompanyEventBus } from '../runtime/event-bus'
 import type { EndpointMap } from './org-panel-rpc'
 
 export type OrgPanelDeps = {
@@ -25,7 +26,12 @@ export type OrgPanelDeps = {
   communication?: CommunicationManager
   /** cordis 里那份原始配置；安全页的审批策略只能从它推，不许现编。 */
   config?: any
+  /** host 侧事件总线。默认就是本 bundle 的全局单例，注入只是为了让测试能拿到干净的一条。 */
+  events?: CompanyEventBus
 }
+
+/** events/since 单次最多回多少条。再多也不会让老板看得更清楚，只会把一次应答撑大。 */
+const EVENT_PAGE_MAX = 300
 
 /** 一个数据文件的真实台账行。文件不存在时 exists:false，**不填 0 字节**。 */
 export type StorageFileEntry = {
@@ -87,6 +93,7 @@ function approvalPolicy(config: any): { mode: 'always' | 'preapproved' | 'none';
 
 export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
   const { core, gateway, plugins, communication, config } = deps
+  const events = deps.events || companyEventBus
 
   const companySnapshot = async (payload: any) => core.snapshot({
     taskLimit: Number(payload?.taskLimit) || undefined,
@@ -192,7 +199,31 @@ export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
     }
   }
 
+  /**
+   * host→client 事件推送的唯一出口。
+   *
+   * 为什么需要它：companyEventBus 在 host bundle 与 browser bundle 里是**两个独立单例**
+   * （tsdown 两个 entry），host 侧 publish 的飞书来信 / 插件安装 / 识图事件永远飘不到浏览器。
+   * 前台的 🔔、机房的装插件、多媒体工作台的识图这三套视觉语言在真实链路里因此全是死代码。
+   *
+   * 契约是 unary RPC，没有 server push，所以只能由 client 拉。**必须带游标只取增量**：
+   * 每次全量既浪费带宽，又会让前端反复收到同一批事件（虽然总线会去重，但那是在拿浪费换正确）。
+   *
+   * 只读：拉一次事件不会改变 host 上的任何状态，也不会把事件从 feed 里删掉 ——
+   * 多个标签页各拉各的，谁都不会吃掉别人的那一份。
+   */
+  const eventsSince = async (payload: any) => {
+    const cursor = Number(payload?.cursor)
+    const limit = Number(payload?.limit)
+    const page = events.since(
+      Number.isFinite(cursor) && cursor > 0 ? cursor : 0,
+      Number.isFinite(limit) && limit > 0 ? Math.min(limit, EVENT_PAGE_MAX) : EVENT_PAGE_MAX,
+    )
+    return { available: true, ...page }
+  }
+
   const map: EndpointMap = {
+    'events/since': eventsSince,
     'company/snapshot': companySnapshot,
     'plugins/approvals': pluginApprovals,
     'plugins/health': pluginHealth,

@@ -26,7 +26,8 @@ import type { SecuritySettingsData } from './settings/SecuritySettings'
 import type { StorageSettingsData } from './settings/StorageSettings'
 import { applyCompanySnapshot, readCompanySnapshot, setCompanySnapshot, useCompanySnapshot } from './employee-profile/EmployeeProfile'
 import { deriveCompanyEvents } from './selectors'
-import { companyEventBus, SESSION_CHANNEL } from '../runtime/event-bus'
+import { companyEventBus, HOST_CHANNEL, SESSION_CHANNEL } from '../runtime/event-bus'
+import type { CompanyEvent } from '../runtime/company-events'
 import { callOrgPanel, orgPanelWrite, outcomeMessage, type OrgPanelRpc, type RpcOutcome } from './rpc'
 
 /** host 侧 host-v2.ts 注册的快照工具名。改名必须两边一起改。 */
@@ -137,6 +138,8 @@ export type CompanyHydration = {
 
 /** 与 host 侧 src/host/org-panel-read.ts 的 readEndpoints() 一一对应。 */
 export const READ_ENDPOINTS = {
+  /** host→client 事件增量。只有事件泵用它，不参与设置中心那一次并发拉取。 */
+  events: 'events/since',
   snapshot: 'company/snapshot',
   approvals: 'plugins/approvals',
   health: 'plugins/health',
@@ -269,6 +272,237 @@ export async function fetchOrgPanel(rpc: OrgPanelRpc, signal?: AbortSignal): Pro
   }
 }
 
+// ---------------------------------------------------------------------------
+// host → client 事件泵
+// ---------------------------------------------------------------------------
+//
+// companyEventBus 在 host bundle 与 browser bundle 里是**两个独立单例**（tsdown 两个 entry），
+// host 侧 publish 的飞书来信 / 插件安装 / 识图事件不会自己飘进浏览器。
+// 前台的 🔔、机房的装插件、多媒体工作台的识图这三套已经写好的视觉语言，
+// 在接上这个泵之前于真实链路里全是死代码 —— 也就是说「我在飞书 @老王，
+// 回复我的就是网页里那个老王」这件事，此前没有任何可见证明。
+//
+// DSH 的 RPC 契约是 unary，没有 server push，只能由 client 拉。三条自律：
+//   1. **只拉增量**：带游标，host 只回 cursor 之后的事件。
+//   2. **只在 Tab 可见时拉**：visibilitychange 一隐藏就停表，不在后台空转。
+//   3. **退避**：空手而归就把间隔往上推，绝不为了「看起来实时」高频轮询。
+// 以及一条底线：通道不可用时**一次都不重试、一条都不伪造**，办公室保持现有的会话推导行为。
+
+/** 拉到新事件后的下一次间隔（ms）。真有事情发生时才用得上这个节奏。 */
+export const HOST_EVENT_MIN_INTERVAL = 5000
+/** 一直没有新事件时的间隔上限（ms）。稳态就是这个值。 */
+export const HOST_EVENT_MAX_INTERVAL = 60000
+/** 每空一次就把间隔乘上它。5s → 9s → 16.2s → 29.2s → 52.5s → 60s。 */
+export const HOST_EVENT_BACKOFF = 1.8
+/** 单次最多要多少条（host 侧还会再夹一次上限）。 */
+export const HOST_EVENT_PAGE = 200
+/** 连续这么多次「通道活着但这个端点报错」就彻底停表，不刷屏、不硬撑。 */
+export const HOST_EVENT_MAX_ERRORS = 3
+
+/** 停表原因。空串 = 还在跑。这些原因都要能原样写进日志/诊断，不许含糊成「出错了」。 */
+export const PUMP_NO_RPC = '当前运行时没有 client↔host 通道，事件泵不启动'
+export const PUMP_UNAVAILABLE = '/org-panel 频道没有应答，事件泵停表（办公室继续用会话推导，不伪造事件）'
+export const PUMP_NO_ENDPOINT = 'host 不认识 events/since（版本较旧），事件泵停表'
+export const PUMP_TOO_MANY_ERRORS = 'events/since 连续失败，事件泵停表'
+
+type HostEventPageWire = {
+  cursor?: unknown
+  events?: unknown
+  dropped?: unknown
+  more?: unknown
+}
+
+/**
+ * 只认形状合法的事件。host 是自己人，但「自己人发来的脏数据」照样会把 reducer 带歪，
+ * 而办公室里一个错位的小人比没有小人更难排查。
+ */
+export function readEventPage(value: unknown): CompanyEvent[] {
+  const raw = (value as HostEventPageWire)?.events
+  if (!Array.isArray(raw)) return []
+  const out: CompanyEvent[] = []
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue
+    const event = item as CompanyEvent
+    if (typeof event.id !== 'string' || !event.id) continue
+    if (typeof event.type !== 'string' || !event.type) continue
+    if (typeof event.at !== 'number' || !Number.isFinite(event.at)) continue
+    out.push(event)
+  }
+  return out
+}
+
+export type HostEventPumpDeps = {
+  rpc: OrgPanelRpc | null | undefined
+  /** 增量落地口，默认推进浏览器侧总线的 'host' 通道。 */
+  publish?(events: CompanyEvent[]): void
+  /** Tab 是否可见，默认读 document.visibilityState。 */
+  visible?(): boolean
+  /** 定时器注入口；测试用假时钟驱动，生产就是 setTimeout。 */
+  setTimer?(fn: () => void, ms: number): any
+  clearTimer?(handle: any): void
+  /** 可见性变化订阅口，返回退订函数。默认挂 document 的 visibilitychange。 */
+  onVisibility?(listener: () => void): () => void
+}
+
+export type HostEventPump = {
+  /** 立刻拉一次。返回本次真正收下的事件数；-1 = 已停表或当前不可见，没有发出任何请求。 */
+  pull(): Promise<number>
+  /** 当前游标。0 = 一次都还没成功拉过。 */
+  cursor(): number
+  /** 下一次的间隔（ms）。 */
+  interval(): number
+  /** 停表原因；空串表示还在跑。 */
+  stopped(): string
+  /** 下一次拉取排队时用的延时（ms）；null = 根本没排队（页面隐藏 / 已停表 / 请求正在飞）。 */
+  pending(): number | null
+  stop(): void
+}
+
+const defaultVisible = (): boolean => {
+  // 非浏览器环境（SSR / 单测）当作可见：这里判错的代价是多拉一次，而判反会让泵永远不跑。
+  if (typeof document === 'undefined') return true
+  return document.visibilityState !== 'hidden'
+}
+
+const defaultOnVisibility = (listener: () => void): (() => void) => {
+  if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return () => {}
+  document.addEventListener('visibilitychange', listener)
+  return () => document.removeEventListener('visibilitychange', listener)
+}
+
+/**
+ * 建一台事件泵并立刻开始工作（可见时马上拉一次）。
+ * 任何失败都不向上抛：拿不到就停表，办公室退回会话推导那条老路，行为与接泵之前逐字一致。
+ */
+export function createHostEventPump(deps: HostEventPumpDeps): HostEventPump {
+  const publish = deps.publish || ((events: CompanyEvent[]) => companyEventBus.publishAll(events, HOST_CHANNEL))
+  const visible = deps.visible || defaultVisible
+  const setTimer = deps.setTimer || ((fn: () => void, ms: number) => setTimeout(fn, ms))
+  const clearTimer = deps.clearTimer || ((handle: any) => clearTimeout(handle))
+
+  let cursor = 0
+  let interval = HOST_EVENT_MIN_INTERVAL
+  let stoppedReason = ''
+  let timer: any = null
+  let queuedAt: number | null = null
+  let inflight = false
+
+  const clear = () => {
+    if (timer !== null) clearTimer(timer)
+    timer = null
+    queuedAt = null
+  }
+
+  const schedule = (ms: number) => {
+    if (stoppedReason || !visible()) return
+    clear()
+    queuedAt = ms
+    timer = setTimer(() => { timer = null; queuedAt = null; void pull() }, ms)
+  }
+
+  const halt = (reason: string) => {
+    stoppedReason = reason
+    clear()
+  }
+
+  let errors = 0
+
+  const pull = async (): Promise<number> => {
+    if (stoppedReason) return -1
+    // 页面隐藏就一次都不打：停表比「反正只是个小请求」重要，后台标签页不该替老板烧电。
+    if (!visible()) { clear(); return -1 }
+    if (inflight) return -1
+    inflight = true
+    try {
+      const outcome = await callOrgPanel<HostEventPageWire>(deps.rpc, READ_ENDPOINTS.events, { cursor, limit: HOST_EVENT_PAGE })
+      if (stoppedReason) return -1
+      if (outcome.state === 'unavailable') {
+        // 通道根本不通。**这里绝不重试**：重试改变不了部署形态，只会变成一台永远敲不开门的泵。
+        halt(PUMP_UNAVAILABLE)
+        return -1
+      }
+      if (outcome.state === 'error') {
+        // 端点不存在（老 host）/ 参数不合法：再打一万次也是同一个答案。
+        if (outcome.code === 'bad-request') { halt(PUMP_NO_ENDPOINT); return -1 }
+        errors += 1
+        if (errors >= HOST_EVENT_MAX_ERRORS) { halt(PUMP_TOO_MANY_ERRORS); return -1 }
+        interval = Math.min(Math.round(interval * HOST_EVENT_BACKOFF), HOST_EVENT_MAX_INTERVAL)
+        schedule(interval)
+        return 0
+      }
+      errors = 0
+      const page = outcome.value || {}
+      const events = readEventPage(page)
+      const next = Number(page.cursor)
+      if (Number.isFinite(next) && next > cursor) cursor = next
+      if (events.length) {
+        publish(events)
+        interval = HOST_EVENT_MIN_INTERVAL
+      } else {
+        interval = Math.min(Math.round(interval * HOST_EVENT_BACKOFF), HOST_EVENT_MAX_INTERVAL)
+      }
+      // host 说还有积压就立刻续一页。这不是高频轮询 —— 是把一次积压一次性取完，
+      // 且必然收敛：feed 有条数上限，每页都会把游标往前推。
+      schedule(events.length && page.more === true ? 0 : interval)
+      return events.length
+    } finally {
+      inflight = false
+    }
+  }
+
+  const offVisibility = deps.onVisibility ? deps.onVisibility(onVisibilityChange) : defaultOnVisibility(onVisibilityChange)
+
+  function onVisibilityChange(): void {
+    if (stoppedReason) return
+    if (!visible()) { clear(); return }
+    // 老板切回来了：回到最短间隔并立刻补一次。这是一次，不是一串。
+    interval = HOST_EVENT_MIN_INTERVAL
+    void pull()
+  }
+
+  if (!deps.rpc) halt(PUMP_NO_RPC)
+  else void pull()
+
+  return {
+    pull,
+    cursor: () => cursor,
+    interval: () => interval,
+    stopped: () => stoppedReason,
+    pending: () => queuedAt,
+    stop: () => { halt(stoppedReason || '已卸载'); offVisibility() },
+  }
+}
+
+/**
+ * 同一条 rpc 上**只跑一台泵**。DSH 可能同时挂着多个 Session 视图，
+ * 每个视图各起一台泵会让轮询频率成倍上涨 —— 那正是「克制」的反面。
+ * 事件最后都落进同一条浏览器侧总线，多台泵除了多打 host 之外没有任何收益。
+ */
+const sharedPumps = new Map<OrgPanelRpc, { pump: HostEventPump; refs: number }>()
+
+/**
+ * 事件泵的 React 外壳。rpc 变了就换一台泵，最后一个使用者卸载时停表。
+ * rpc 为空时一台泵都不建，一个定时器都不排 —— 降级形态与接泵之前逐字一致。
+ */
+export function useHostEventChannel(rpc: OrgPanelRpc | null | undefined): void {
+  useEffect(() => {
+    if (!rpc) return
+    let entry = sharedPumps.get(rpc)
+    if (!entry) {
+      entry = { pump: createHostEventPump({ rpc }), refs: 0 }
+      sharedPumps.set(rpc, entry)
+    }
+    entry.refs += 1
+    const current = entry
+    return () => {
+      current.refs -= 1
+      if (current.refs > 0) return
+      sharedPumps.delete(rpc)
+      current.pump.stop()
+    }
+  }, [rpc])
+}
+
 export type OrgPanelConsole = CompanyHydration & {
   channel: OrgPanelChannelState
   /** 通道不可用时的真实原因原文（含 host 的错误信息），要能直接上屏。 */
@@ -300,6 +534,9 @@ export function useOrgPanel(nodes: any[], rpc: OrgPanelRpc | null | undefined, s
   const alive = useRef(true)
   // 进场时显式置回 true：StrictMode 的双调用会先跑一次 cleanup，只写 cleanup 会把自己永久关掉。
   useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  // host→client 事件泵。挂在这里而不是办公室组件里，是因为 rpc 只在这一处拿得到，
+  // 而且它跟着整个工作台的生命周期走：切 Tab 不该把飞书铃铛的通道掐掉。
+  useHostEventChannel(rpc)
 
   const pull = useCallback(async (): Promise<{ ok: boolean; message: string }> => {
     if (!rpc) {

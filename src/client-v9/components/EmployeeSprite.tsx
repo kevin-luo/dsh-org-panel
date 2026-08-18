@@ -33,23 +33,33 @@ export function EmployeeSprite(props: {
   const pulse = props.pulse || 0
   const eventLabel = runtime && runtime.status !== 'idle' ? EMPLOYEE_RUNTIME_LABEL[runtime.status] : ''
   const statusText = eventLabel || EMPLOYEE_STATUS_LABEL[status]
-  // 行内文案优先级：当前工具 > 当前活动（会议/识图/装插件）> 任务卡 > 落位文案。
+  // staff_chat 的 desc 是**老板刚说的那句话**（selectors 取的是 message 参数），不是员工在干的事。
+  // 行内也好、悬浮卡也好都不复述它：34 字的小泡里挂一句具体的话，扫一眼就成了「他正在做这件事」，
+  // 前缀根本来不及看。原话不删，只是留在右栏任务卡那个本来就标着「派活」的位置。
+  const bossChat = task && task.tool === 'staff_chat' ? task : undefined
+  const taskLine = task && !bossChat ? task.desc : ''
+  // 只报事实：面板收没收到回传。「面板没收到」不等于「员工没干活」，这两件事不许混成一句。
+  const bossLine = bossChat ? `老板交办：${bossChat.running ? '面板暂未收到进展回传' : '结果见右栏任务卡'}` : ''
+  // 行内文案优先级：当前工具名 > 当前活动（会议/识图/装插件）> 真实任务描述 > 诚实的状态词。
+  // 子代理内部的工具调用不进父会话 node 流，所以经常什么细节都拿不到 ——
+  // 那种时候就老老实实显示「正在工作」，不拿老板自己的话冒充一个具体活动。
   const shortText = runtime?.tool
     ? clip(runtime.tool.label, 12)
     : runtime && runtime.status !== 'idle'
       ? clip(runtime.activity, 12)
-      : status === 'working' && task
-        ? clip(task.desc, 10)
-        : placement.activity
+      : taskLine
+        ? clip(taskLine, 10)
+        : status === 'working' ? statusText : placement.activity
   const cardText = runtime && runtime.status !== 'idle'
     ? clip(runtime.activity, 34)
-    : task
-      ? clip(task.desc, 34)
-      : placement.activity
+    : taskLine
+      ? clip(taskLine, 34)
+      : bossLine || placement.activity
   const station = runtime && runtime.station !== 'desk' ? STATION_LABEL[runtime.station] : ''
 
   return h('button', {
     type: 'button', className: `cy9-sprite ${status}${active ? ' active' : ''}`,
+    'data-status': status,
     style: { left: placement.x, top: placement.y },
     onClick: () => onSelect(staff.id), onDoubleClick: () => onTalk(staff),
     title: `${staff.name} · ${statusText}${station ? ` · ${station}` : ''} · 双击直接 @ 本人`,

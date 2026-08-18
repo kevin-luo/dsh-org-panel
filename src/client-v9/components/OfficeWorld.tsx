@@ -1,9 +1,10 @@
 import { createElement as h, useMemo, useSyncExternalStore } from 'react'
 import type { Delegation, LegacyStatus, OfficePlacement, StaffDef } from '../types'
-import { legacyToEmployeeStatus, OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
+import { OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
 import { officeBase } from '../asset-map'
 import { OFFICE_ZONES, OFFICE_ZOOM_LEVELS, RECEPTION_DESK } from '../office-layout'
-import { officePlacement, officePlacementFromRuntime, runtimeToEmployeeStatus } from '../selectors'
+import type { CompanyPresence, PresenceFallback } from '../selectors'
+import { companyPresence, officePlacement, officePlacementFromRuntime, runtimeToEmployeeStatus } from '../selectors'
 import type { CompanyRuntime, EmployeeRuntimeState } from '../../runtime/company-events'
 import { companyEventBus } from '../../runtime/event-bus'
 import { EmployeeSprite } from './EmployeeSprite'
@@ -14,6 +15,49 @@ const readBus = () => companyEventBus.snapshot()
 
 /** 事件目标位被占用时高亮的区域（需求文档三十三条）。 */
 const STATION_ZONE: Record<string, string> = { 'media-lab': 'media-lab', 'server-room': 'server-room', meeting: 'meeting' }
+
+// 「现在」那一行的样式。styles.ts 属于布局 agent，这里用内联样式，不去动公共样式表。
+const NOW_ROW: any = {
+  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+  padding: '5px 12px', borderBottom: '1px solid rgba(67,217,255,.18)',
+  background: 'rgba(9,16,29,.9)', fontSize: 11, lineHeight: '18px',
+}
+const NOW_CHIP: any = { border: 0, background: 'transparent', color: '#9eafc7', font: 'inherit', padding: 0, cursor: 'pointer' }
+const NOW_ALERT: any = {
+  padding: '1px 8px', border: '1px solid rgba(255,86,86,.55)', borderRadius: 999,
+  background: 'rgba(255,86,86,.14)', color: '#ffd9d9', font: 'inherit', fontWeight: 700, cursor: 'pointer',
+}
+const NOW_NAME: any = {
+  padding: '1px 7px', border: '1px solid rgba(255,86,86,.4)', borderRadius: 999,
+  background: 'transparent', color: '#ffc9c9', font: 'inherit', cursor: 'pointer',
+}
+
+/**
+ * 办公室顶部「现在」那一行：全公司此刻的单一答案位。
+ * 数字只来自 companyPresence（与办公室画出来的小人是同一份状态），点一下就定位到人。
+ */
+function NowRow(props: { presence: CompanyPresence; staff: StaffDef[]; onSelect: (staffId: string) => void }) {
+  const { presence, staff, onSelect } = props
+  const { counts } = presence
+  const nameOf = (id: string) => staff.find((item) => item.id === id)?.name || id
+  const focus = (ids: string[]) => { if (ids.length) onSelect(ids[0]) }
+  return h('div', { className: 'cy9-office-now', style: NOW_ROW },
+    h('b', { style: { color: '#dff8ff' } }, '现在'),
+    h('button', { type: 'button', style: NOW_CHIP, onClick: () => focus(presence.working), title: '定位到第一位工作中的员工' }, `${counts.working} 人工作中`),
+    h('span', { style: { color: '#41506a' } }, '·'),
+    h('button', { type: 'button', style: NOW_CHIP, onClick: () => focus(presence.meeting), title: '定位到会议室' }, `${counts.meeting} 人在会议`),
+    h('span', { style: { color: '#41506a' } }, '·'),
+    h('button', {
+      type: 'button', style: counts.blocked > 0 ? NOW_ALERT : NOW_CHIP, onClick: () => focus(presence.blocked),
+      title: counts.blocked > 0 ? '定位到第一位卡住的员工' : '当前没有人卡住',
+    }, `${counts.blocked} 人卡住`),
+    presence.blocked.map((id) => h('button', {
+      key: id, type: 'button', style: NOW_NAME, onClick: () => onSelect(id),
+      title: presence.reasons[id] ? `${nameOf(id)}：${presence.reasons[id]}` : `${nameOf(id)}：面板没拿到卡住原因`,
+    }, nameOf(id))),
+    presence.eventDriven ? null : h('span', { style: { marginLeft: 'auto', color: '#5b6b86', fontSize: 10 } }, '来自本会话派活记录'),
+  )
+}
 
 export function OfficeWorld(props: {
   staff: StaffDef[]
@@ -33,7 +77,18 @@ export function OfficeWorld(props: {
   const busRuntime = useSyncExternalStore(subscribeBus, readBus, readBus)
   const runtime = props.runtime || busRuntime
   const zoom = OFFICE_ZOOM_LEVELS[Math.min(zoomIdx, OFFICE_ZOOM_LEVELS.length - 1)]
-  const eventDriven = !!runtime && runtime.eventCount > 0
+
+  // 全公司「现在」的唯一口径。办公室画的小人、顶部那一行、左右两栏读的都是这一份。
+  const presence = useMemo(() => {
+    const fallback: Record<string, PresenceFallback> = {}
+    for (const item of staff) {
+      const tasks = tasksMap[item.id] || []
+      const task = tasks.find((entry) => entry.running) || tasks[tasks.length - 1]
+      fallback[item.id] = { status: statuses[item.id] || 'idle', tool: task?.tool }
+    }
+    return companyPresence(staff.map((item) => item.id), runtime, fallback)
+  }, [staff, statuses, tasksMap, runtime])
+  const eventDriven = presence.eventDriven
 
   // 位置只来自「事件 → reducer → station」。tick 不在依赖里，也不在计算里：
   // 没有新事件就不会重算，员工放 10 分钟位置完全不变（需求文档三十四 / 五十三条）。
@@ -41,17 +96,13 @@ export function OfficeWorld(props: {
     const tasks = tasksMap[item.id] || []
     const task = tasks.find((entry) => entry.running) || tasks[tasks.length - 1]
     const state = eventDriven ? runtime.employees[item.id] : undefined
+    const status = runtimeToEmployeeStatus(presence.status[item.id])
     if (state && state.status !== 'idle') {
-      return [item.id, { placement: officePlacementFromRuntime(item, state), task, state, status: runtimeToEmployeeStatus(state.status) }]
+      return [item.id, { placement: officePlacementFromRuntime(item, state), task, state, status }]
     }
-    const legacy = statuses[item.id] || 'idle'
-    return [item.id, {
-      placement: officePlacement(item, legacy, 0, task),
-      task, state,
-      status: legacyToEmployeeStatus(legacy, task?.tool),
-    }]
+    return [item.id, { placement: officePlacement(item, presence.legacy[item.id], 0, task), task, state, status }]
   })) as Record<string, { placement: OfficePlacement; task?: Delegation; state?: EmployeeRuntimeState; status: ReturnType<typeof runtimeToEmployeeStatus> }>,
-  [staff, statuses, tasksMap, runtime, eventDriven])
+  [staff, tasksMap, runtime, eventDriven, presence])
 
   // 哪些事件目标位当前真的有人，用于点亮区域；没人就保持安静。
   const busyZones = useMemo(() => {
@@ -62,9 +113,9 @@ export function OfficeWorld(props: {
       const zone = station ? STATION_ZONE[station] : null
       if (zone) zones.add(zone)
     }
-    if (!eventDriven && staff.some((item) => (tasksMap[item.id] || []).some((task) => task.running && task.tool === 'staff_meeting'))) zones.add('meeting')
+    if (!eventDriven && presence.meeting.length) zones.add('meeting')
     return zones
-  }, [staff, placements, tasksMap, eventDriven])
+  }, [staff, placements, presence, eventDriven])
 
   const notices = runtime?.reception.notices || []
   const base = officeBase()
@@ -79,6 +130,7 @@ export function OfficeWorld(props: {
         key: level, type: 'button', className: zoomIdx === index ? 'on' : '', onClick: () => onZoom(index),
       }, `${Math.round(level * 100)}%`))),
     ),
+    h(NowRow, { presence, staff, onSelect }),
     h('div', { className: 'cy9-office-viewport' },
       h('div', { className: 'cy9-office-scroll', style: { width: OFFICE_WIDTH * zoom, height: OFFICE_HEIGHT * zoom } },
         h('div', {

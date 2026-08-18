@@ -57,11 +57,30 @@ export function resolveOrgPanelRpc(ctx: any): OrgPanelRpc | null {
   try {
     const connection = ctx && typeof ctx.get === 'function' ? ctx.get('connection') : undefined
     const rpc = connection?.rpc
-    return rpc && typeof rpc.call === 'function' ? (rpc as OrgPanelRpc) : null
+    return setCurrentOrgPanelRpc(rpc && typeof rpc.call === 'function' ? (rpc as OrgPanelRpc) : null)
   } catch {
     // 没 provide 过这个服务时 cordis 可能抛：当作没有通道。
-    return null
+    return setCurrentOrgPanelRpc(null)
   }
+}
+
+// ---------------------------------------------------------------------------
+// 组件树深处的取用口
+// ---------------------------------------------------------------------------
+// rpc 只在 client-v9/index.tsx 那个 ctx 上取得到，然后一路当 props 往下传。
+// 但有两处需要它的地方不在那条 props 链上：员工档案的记忆分页、员工消息旁的记忆证据 chip。
+// 与其为它们把 rpc 串过五层组件，不如在这里存一份 resolveOrgPanelRpc() 已经解析好的实例。
+// 没解析到就是 null —— 调用方一律安静回落到既有行为，绝不因此显示 0 或「暂无」。
+
+let currentRpc: OrgPanelRpc | null = null
+
+/** 供 index.tsx 之外的模块按需取用；null = 这套部署没有 client↔host 通道。 */
+export function currentOrgPanelRpc(): OrgPanelRpc | null { return currentRpc }
+
+/** 由 resolveOrgPanelRpc 写入；单测也用它注入一个假通道。返回入参，方便直接 return。 */
+export function setCurrentOrgPanelRpc(rpc: OrgPanelRpc | null): OrgPanelRpc | null {
+  currentRpc = rpc
+  return rpc
 }
 
 /** 调一个 `/org-panel` endpoint。任何异常都会被翻译成三态之一，绝不向上抛。 */

@@ -163,7 +163,9 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   let channel: OrgPanelChannelHandle | undefined
   try {
     const deps: OrgPanelDeps = { core, gateway, plugins, communication, config }
-    channel = registerOrgPanelChannel(ctx, { ...readEndpoints(deps), ...writeEndpoints(deps) })
+    // core.memoryEndpoints 是记忆证据台账 + 记忆分页（见 host/org-panel-memory.ts）。
+    // 它读的是 core 自己的运行时台账，所以由 core 提供、在这里并进同一条频道。
+    channel = registerOrgPanelChannel(ctx, { ...readEndpoints(deps), ...writeEndpoints(deps), ...core.memoryEndpoints })
   } catch (error) {
     warn(ctx, '/org-panel RPC 频道', error)
   }

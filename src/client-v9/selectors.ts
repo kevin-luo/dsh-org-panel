@@ -211,9 +211,120 @@ export function collectToolCalls(nodes: any[], runningCalls: any[]): ToolCallRec
   }))
 }
 
-export function extractDelegations(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): Delegation[] {
-  const out: Delegation[] = []
+// ---------------------------------------------------------------------------
+// 「卡住」的第二种来源：员工回复里的待决信号
+//
+// 为什么必须有：tool-result 只有 isError 一个硬信号。员工回一句
+// 「我需要你确认用哪个数据库再继续」是一次**成功**的 tool-result ——
+// 顶栏会把它计进「已交付」，办公室画成绿色 ✓。老板最该看见的那一类卡住，
+// 恰恰是唯一看不见的一类。
+//
+// 这套规则是**启发式**，边界情况一定存在（反问句、复述老板原话、条件式表述、
+// 把待决信号写在代码块或引用里，都可能骗过它）。所以口径定成「宁可漏判，不可误判」：
+//   1. 纯正则匹配，不调模型、不猜语义 —— 规则可单测、可配置、可扩展（见 PENDING_SIGNAL_RULES）；
+//   2. 必须命中「明确指向老板的请求」或「明确的阻塞词」，光出现「确认」「权限」不算；
+//   3. 命中句先过一遍排除表，「已确认」「无需授权」「按老板确认的方案」这类回顾性表述直接放行；
+//   4. reason 一律取**真实原句片段**（clip 到 60 字），不改写、不加情绪、不补充推测。
+// 漏判的代价是「少标一个卡住」，误判的代价是「把一次正常交付标成卡住」——后者更伤信任。
+// ---------------------------------------------------------------------------
+
+/** 一条待决信号规则。pattern 不许带 g 标志（会带 lastIndex 状态，测试与生产结果会不一致）。 */
+export type PendingSignalRule = { id: string; label: string; pattern: RegExp }
+
+/** 命中的待决信号。reason 是员工原句片段，UI 直接照抄。 */
+export type PendingSignal = { ruleId: string; label: string; reason: string }
+
+/**
+ * 默认规则表。调用方可以整表替换或追加（detectPendingDecision 的第二个参数），
+ * 所以新增一类待决信号不需要改这里的判定逻辑。
+ */
+export const PENDING_SIGNAL_RULES: readonly PendingSignalRule[] = [
+  // 「我需要你确认用哪个数据库再继续」：必须带明确的第二人称，否则「已完成，请确认。」这种
+  // 极常见的交付结尾会被误判成卡住。
+  { id: 'confirm', label: '等待确认', pattern: /(?:需要|请|麻烦|烦请)(?:您|你|老板)(?:先|再)?(?:帮忙|帮我)?(?:确认|拍板|定夺|敲定)/ },
+  // 「请老板选一个方案」/「走哪个分支？」——后者要求带问号，避免「文档说明了该用哪个接口」被误判。
+  { id: 'choose', label: '需要选择', pattern: /(?:需要|请|麻烦|烦请)(?:您|你|老板)(?:先)?(?:选择|选定|指定|挑一个|定一下)|(?:用|选|走|接|按)哪(?:一)?(?:个|种|条|套|版|份)[^。！？!?\n]{0,12}[?？]/ },
+  { id: 'credential', label: '缺少凭据', pattern: /(?:缺少|缺失|没有|未提供|未配置|尚未提供|拿不到|需要)[^。！？!?\n]{0,12}(?:凭据|凭证|密钥|口令|密码|token|api[ _-]?key|access[ _-]?key|账号|账户|连接串|连接信息|授权码|secret)/i },
+  { id: 'permission', label: '权限不足', pattern: /权限不足|无权(?:访问|读取|写入|操作|执行)|没有(?:访问)?权限[^。！？!?\n]{0,8}(?:访问|读取|写入|操作|执行|调用|打开|继续)|需要(?:先)?(?:申请|开通|获得)授权|permission denied|access denied/i },
+  { id: 'decision', label: '需要老板拍板', pattern: /(?:等|等待|等候)(?:您|你|老板)(?:的)?(?:确认|回复|答复|指示|决定|拍板|指令)|由(?:您|你|老板)(?:来)?(?:决定|拍板|定夺)/ },
+  { id: 'halt', label: '无法继续', pattern: /无法继续|不能继续|暂时无法(?:继续|进行|完成)|需要人工(?:介入|确认|处理)|先(?:暂停|停在这里)/ },
+]
+
+/** 排除表：命中句里出现这些回顾性 / 否定性表述，整句放行。宁可漏判。 */
+const PENDING_EXCLUSIONS: readonly RegExp[] = [
+  /已(?:经)?(?:确认|授权|拿到|获得|取得|完成|拍板|选定|修复|解决|绕过)/,
+  /(?:无需|不需要|不用)(?:再)?(?:确认|授权|选择|等待|拍板)/,
+  /(?:按|依据|根据)(?:您|你|老板)(?:之前|先前)?(?:的)?(?:确认|指定|选定|要求|指示)/,
+  /没有(?:权限|授权)(?:问题|风险|障碍)/,
+  /(?:如|若|如果|如需|若需|后续)[^。！？!?\n]{0,12}(?:需要|不确定|问题|调整)/,
+]
+
+/** 待决信号扫描时忽略的超长行：多半是贴进来的日志 / 代码块，不是员工在跟老板说话。 */
+const PENDING_MAX_LINE = 120
+
+/**
+ * 员工回复 → 待决信号。命中返回原句片段，没命中返回 null。
+ * 纯函数：同样的文本必然同样的结果，不读时钟、不调模型。
+ */
+export function detectPendingDecision(text: unknown, rules: readonly PendingSignalRule[] = PENDING_SIGNAL_RULES): PendingSignal | null {
+  const source = typeof text === 'string' ? text : ''
+  if (!source.trim()) return null
+  for (const raw of source.split(/[。！？!?\n；;]+/)) {
+    const line = raw.replace(/\s+/g, ' ').trim()
+    if (!line || line.length > PENDING_MAX_LINE) continue
+    if (PENDING_EXCLUSIONS.some((exclusion) => exclusion.test(line))) continue
+    for (const rule of rules) {
+      if (rule.pattern.test(line)) return { ruleId: rule.id, label: rule.label, reason: clip(line, 60) }
+    }
+  }
+  return null
+}
+
+/** 子代理结算回复索引：childId → 员工本人真正说的那段话。 */
+export function settlementReplies(nodes: any[]): Map<string, string> {
+  const replies = new Map<string, string>()
+  for (const node of nodes || []) {
+    const event = settlementEvent(node)
+    if (event) {
+      if (event.reply) replies.set(event.childId, event.reply)
+      continue
+    }
+    const source = messageSource(node)
+    if (source?.kind === 'subagent-settled' && source.senderSessionId) {
+      const text = cleanSettlementReply(extractText(node.content))
+      if (text) replies.set(String(source.senderSessionId), text)
+    }
+  }
+  return replies
+}
+
+/**
+ * 一条派活记录里「员工真正说的话」。
+ * staff_chat 的 tool-result 只是接单回执（[[NIUMA_STAFF]] + 一句转交语），员工本人的话在
+ * 子代理结算节点里，所以先按 childId 去 replies 取；取不到才退回回执正文。
+ */
+export function dispatchReplyText(record: ToolCallRecord, replies?: Map<string, string>): string {
+  const res = record.result
+  if (!res) return ''
+  if (record.name === 'staff_chat') {
+    const marker = parseStaffMarker(res.text)
+    const settled = marker && replies ? replies.get(marker.childId) : undefined
+    return settled || cleanStaffResult(res.text)
+  }
+  return res.text
+}
+
+/**
+ * Delegation + 卡住信号。
+ * types.ts 是公共类型文件（别的模块也在用），这里用交叉类型就地扩展，不去改它；
+ * blocked 是可选字段，所以 Delegation[] 与 DelegationWithBlock[] 互相赋值都成立。
+ */
+export type DelegationWithBlock = Delegation & { blocked?: PendingSignal | null }
+
+export function extractDelegations(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): DelegationWithBlock[] {
+  const out: DelegationWithBlock[] = []
   const settled = settledChildIds(nodes)
+  const replies = settlementReplies(nodes)
   for (const record of collectToolCalls(nodes, runningCalls)) {
     const callId = record.callId
     const c = record
@@ -232,6 +343,7 @@ export function extractDelegations(nodes: any[], runningCalls: any[], roles: Rol
           desc: meetingDesc,
           running: !res,
           isError: res ? res.isError : false,
+          blocked: null,
           lead: meetingSummary.lead,
           points: meetingSummary.points,
           startTime: c.startTime,
@@ -255,12 +367,15 @@ export function extractDelegations(nodes: any[], runningCalls: any[], roles: Rol
     const staffId = explicitStaff || staffForRole(roleId, staff)
     const staffMarker = res ? parseStaffMarker(res.text) : null
     const waitingForEmployee = c.name === 'staff_chat' && !!staffMarker && staffMarker.state === 'accepted' && !settled.has(staffMarker.childId)
+    // 交付成功的那一条也要再看一眼员工到底说了什么：成功的 tool-result 里可能写着「我需要你确认…」。
+    const pending = res && !res.isError && !waitingForEmployee ? detectPendingDecision(dispatchReplyText(record, replies)) : null
     out.push({
       callId,
       tool: c.name,
       desc,
       running: !res || waitingForEmployee,
       isError: res ? res.isError : false,
+      blocked: pending,
       lead: summary.lead,
       points: summary.points,
       startTime: c.startTime,
@@ -311,15 +426,71 @@ export function staffOf(id: string, staff: StaffDef[]): StaffDef | undefined {
   return staff.find((s) => s.id === id || s.roleId === id)
 }
 
-export function tasksFor(staffId: string, delegations: Delegation[]): Delegation[] {
+export function tasksFor<T extends Delegation>(staffId: string, delegations: readonly T[]): T[] {
   return delegations.filter((d) => d.staffId === staffId || d.roleId === staffId)
 }
 
-export function statusFromTasks(tasks: Delegation[]): LegacyStatus {
-  if (tasks.some((t) => t.running)) return 'running'
-  if (tasks.some((t) => t.isError)) return 'wait'
-  if (tasks.some((t) => !t.running && !t.isError)) return 'done'
-  return 'idle'
+/** statusFromTasks 内部用的单人 id：派活记录本来就已经按人分好组了。 */
+const SOLO_EMPLOYEE = '__solo__'
+
+/**
+ * 一个人的派活记录 → 旧四态。
+ *
+ * 这里**不再自己写一套状态优先级**：先把派活记录翻译成 CompanyEvent，再交给
+ * runtime/company-events 的同一个 reducer 算。全公司只有那一份状态规则（G4 第 2 条）。
+ * 因此「卡住」在这条路上也认 blocked 信号，不再只认 isError。
+ * 与旧实现的唯一行为差异：同一个人既有卡住又有交付时，按**事件时间取最后一次**，
+ * 而不是「只要有过错误就永远算卡住」——顶栏问的是「现在」，不是「历史上有没有出过错」。
+ */
+export function statusFromTasks(tasks: readonly DelegationWithBlock[]): LegacyStatus {
+  const runtime = reduceCompanyRuntime(delegationEvents(tasks, () => SOLO_EMPLOYEE), { employeeIds: [SOLO_EMPLOYEE] })
+  return runtimeToLegacyStatus(runtime.employees[SOLO_EMPLOYEE].status)
+}
+
+/**
+ * 派活记录 → CompanyEvent[]（薄适配层）。
+ * 会话节点流那条主路走 deriveCompanyEvents；这条只服务「总线里一条事件都没有」的降级形态，
+ * 两条路最终都进同一个 reducer，所以不存在第二份状态真相。
+ */
+export function delegationEvents(
+  delegations: readonly DelegationWithBlock[],
+  ownerOf: (task: DelegationWithBlock) => string = (task) => task.staffId,
+): CompanyEvent[] {
+  const events: CompanyEvent[] = []
+  const meetings = new Map<string, { topic: string; participants: string[]; start: number; end: number | null }>()
+  for (const task of delegations || []) {
+    const employeeId = ownerOf(task)
+    if (!employeeId) continue
+    const start = task.startTime ?? 0
+    const end = task.endTime ?? start
+    if (task.tool === 'staff_meeting') {
+      // 会议记录是「一个参会人一条」，callId 形如 `${callId}:${staffId}`，先还原成同一场会。
+      const meetingId = task.callId.includes(':') ? task.callId.slice(0, task.callId.lastIndexOf(':')) : task.callId
+      const known = meetings.get(meetingId) || { topic: task.desc, participants: [], start, end: end }
+      if (!known.participants.includes(employeeId)) known.participants.push(employeeId)
+      known.start = Math.min(known.start, start)
+      if (task.running) known.end = null
+      else if (known.end !== null) known.end = Math.max(known.end, end)
+      meetings.set(meetingId, known)
+      continue
+    }
+    events.push({ id: `d:${task.callId}:assigned`, type: 'task.assigned', at: start, origin: 'delegation', employeeId, taskId: task.callId, title: task.desc, tool: task.tool })
+    events.push({ id: `d:${task.callId}:started`, type: 'task.started', at: start, origin: 'delegation', employeeId, taskId: task.callId, title: task.desc, tool: task.tool })
+    if (task.running) continue
+    if (task.isError || task.blocked) {
+      events.push({
+        id: `d:${task.callId}:blocked`, type: 'task.blocked', at: end, origin: 'delegation', employeeId, taskId: task.callId,
+        reason: task.blocked?.reason || clip(task.lead, 60) || '工具返回错误',
+      })
+    } else {
+      events.push({ id: `d:${task.callId}:completed`, type: 'task.completed', at: end, origin: 'delegation', employeeId, taskId: task.callId, outcome: 'success', summary: clip(task.lead, 120) })
+    }
+  }
+  for (const [meetingId, meeting] of meetings) {
+    events.push({ id: `d:meeting:${meetingId}:start`, type: 'meeting.started', at: meeting.start, origin: 'delegation', meetingId, participants: meeting.participants, topic: meeting.topic })
+    if (meeting.end !== null) events.push({ id: `d:meeting:${meetingId}:end`, type: 'meeting.finished', at: meeting.end, origin: 'delegation', meetingId, participants: meeting.participants })
+  }
+  return events
 }
 
 export function lineOf(staff: StaffDef | undefined, status: string, tick: number): string {
@@ -566,6 +737,7 @@ export function externalPlatform(node: any): EventPlatform | null {
 export function deriveCompanyEvents(nodes: any[], runningCalls: any[], roles: RoleDef[], staff: StaffDef[]): CompanyEvent[] {
   const events: CompanyEvent[] = []
   const settled = settledChildIds(nodes)
+  const replies = settlementReplies(nodes)
   const records = collectToolCalls(nodes, runningCalls)
 
   for (const record of records) {
@@ -602,7 +774,11 @@ export function deriveCompanyEvents(nodes: any[], runningCalls: any[], roles: Ro
       events.push({ id: `task:${record.callId}:assigned`, type: 'task.assigned', at: start, origin: 'session', employeeId, taskId: record.callId, title, tool: record.name, source: 'web' })
       events.push({ id: `task:${record.callId}:started`, type: 'task.started', at: start, origin: 'session', employeeId, taskId: record.callId, title, tool: record.name })
       if (!running && res) {
+        // 卡住有两种来源：① 工具真的报错；② 工具成功、但员工回复里写着明确的待决信号
+        //（「我需要你确认用哪个数据库」）。只认 ① 会让老板最该看见的那类卡住变成绿色 ✓。
+        const pending = res.isError ? null : detectPendingDecision(dispatchReplyText(record, replies))
         if (res.isError) events.push({ id: `task:${record.callId}:blocked`, type: 'task.blocked', at: end, origin: 'session', employeeId, taskId: record.callId, reason: clip(res.text, 80) || '工具返回错误' })
+        else if (pending) events.push({ id: `task:${record.callId}:blocked`, type: 'task.blocked', at: end, origin: 'session', employeeId, taskId: record.callId, reason: pending.reason })
         else events.push({ id: `task:${record.callId}:completed`, type: 'task.completed', at: end, origin: 'session', employeeId, taskId: record.callId, outcome: 'success', summary: clip(res.text, 120) })
       }
       continue
@@ -726,17 +902,105 @@ export function statusesFromRuntime(staff: StaffDef[], runtime: CompanyRuntime):
   return statuses
 }
 
+/**
+ * 派活推导（薄适配层）。
+ * 状态本身由 statusFromTasks → delegationEvents → reduceCompanyRuntime 算出来，
+ * 这里只负责「按人分组」和秘书那一条真实覆盖，自己不写任何状态优先级。
+ */
 export function buildCompanyStatuses(
   staff: StaffDef[],
-  delegations: Delegation[],
+  delegations: readonly DelegationWithBlock[],
   sessionRunning: boolean,
-): { statuses: Record<string, LegacyStatus>; tasksMap: Record<string, Delegation[]> } {
+): { statuses: Record<string, LegacyStatus>; tasksMap: Record<string, DelegationWithBlock[]> } {
   const statuses: Record<string, LegacyStatus> = {}
-  const tasksMap: Record<string, Delegation[]> = {}
+  const tasksMap: Record<string, DelegationWithBlock[]> = {}
   for (const st of staff) {
     const tasks = tasksFor(st.id, delegations)
     tasksMap[st.id] = tasks
-    statuses[st.id] = st.id === 'secretary' ? (sessionRunning ? 'running' : 'idle') : statusFromTasks(tasks)
+    // 秘书 = 主 Agent。会话在跑是宿主给的真实布尔（不是编的），所以照实覆盖；
+    // 会话停了就回落到派活推导，而不是硬写成 idle —— 那会把刚交付的结果抹掉。
+    statuses[st.id] = st.id === 'secretary' && sessionRunning ? 'running' : statusFromTasks(tasks)
   }
   return { statuses, tasksMap }
+}
+
+// ---------------------------------------------------------------------------
+// 「现在」的单一答案位（G4 第 2 / 3 条）
+//
+// 顶栏 / 办公室 / 左栏 / 右栏以前各扫各的：顶栏数 buildCompanyStatuses 的四态，
+// 右栏优先读 Event Bus，办公室两边都读。同一时刻四个地方可以给出四个不同答案。
+// 现在四处一律调 companyPresence()，输入同一份 CompanyRuntime 就必然得到同一份计数。
+// ---------------------------------------------------------------------------
+
+/** 没有事件时的兜底口径：旧四态（会议要靠 tool 才能和「工作中」区分开）。 */
+export type PresenceFallback = LegacyStatus | { status?: LegacyStatus; tool?: string }
+
+export type CompanyPresence = {
+  ids: string[]
+  /** 每个人的运行时状态，UI 一律读这个，不要再自己判。 */
+  status: Record<string, EmployeeRuntimeStatus>
+  /** 同一份状态的旧四态投影，给还在用 LegacyStatus 的筛选器 / 图例用。 */
+  legacy: Record<string, LegacyStatus>
+  working: string[]
+  meeting: string[]
+  blocked: string[]
+  done: string[]
+  idle: string[]
+  /** 卡住的人 → 真实原因原句。取不到原因就是空串，绝不编一条。 */
+  reasons: Record<string, string>
+  counts: { total: number; working: number; meeting: number; blocked: number; done: number; idle: number; active: number }
+  /** true = 计数来自真实事件；false = 总线是空的，走的是派活推导兜底。 */
+  eventDriven: boolean
+}
+
+/** 旧四态（+ 会议工具）→ 运行时状态。事件缺席时唯一的一条映射。 */
+export function legacyToRuntimeStatus(status: LegacyStatus | undefined, tool?: string): EmployeeRuntimeStatus {
+  if (status === 'running') return tool === 'staff_meeting' ? 'meeting' : 'working'
+  if (status === 'wait') return 'blocked'
+  if (status === 'done') return 'done'
+  return 'idle'
+}
+
+/**
+ * 名册 + 运行时 → 全公司「现在」的状态与计数。纯函数，不读时钟、不依赖 tick。
+ * 取值规则只有一条：总线里有真实事件且这个人不是 idle，就以事件为准；否则用兜底四态。
+ * 这与办公室原来的落位规则完全一致，现在被抽出来给四处共用。
+ */
+export function companyPresence(
+  ids: readonly string[],
+  runtime?: CompanyRuntime | null,
+  fallback?: Record<string, PresenceFallback | undefined>,
+): CompanyPresence {
+  const eventDriven = !!runtime && runtime.eventCount > 0
+  const roster = ids && ids.length ? [...ids] : eventDriven ? Object.keys(runtime!.employees) : []
+  const status: Record<string, EmployeeRuntimeStatus> = {}
+  const legacy: Record<string, LegacyStatus> = {}
+  const reasons: Record<string, string> = {}
+  const working: string[] = []
+  const meeting: string[] = []
+  const blocked: string[] = []
+  const done: string[] = []
+  const idle: string[] = []
+  for (const id of roster) {
+    const state = eventDriven ? runtime!.employees[id] : undefined
+    const hint = fallback ? fallback[id] : undefined
+    const current: EmployeeRuntimeStatus = state && state.status !== 'idle'
+      ? state.status
+      : typeof hint === 'string' ? legacyToRuntimeStatus(hint) : legacyToRuntimeStatus(hint?.status, hint?.tool)
+    status[id] = current
+    legacy[id] = runtimeToLegacyStatus(current)
+    if (current === 'blocked') { blocked.push(id); reasons[id] = state?.block?.reason || '' }
+    else if (current === 'meeting') meeting.push(id)
+    else if (current === 'done') done.push(id)
+    else if (current === 'idle') idle.push(id)
+    else working.push(id) // working / vision / installing 在「现在」这一行里都算工作中
+  }
+  return {
+    ids: roster, status, legacy, working, meeting, blocked, done, idle, reasons, eventDriven,
+    counts: {
+      total: roster.length,
+      working: working.length, meeting: meeting.length, blocked: blocked.length,
+      done: done.length, idle: idle.length, active: roster.length - idle.length,
+    },
+  }
 }
