@@ -52,7 +52,6 @@ function rosterOf(employees: Employee[]): RosterEntry[] {
 }
 
 export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
-  // Core 已经是纯 Employee Runtime，不再需要 Proxy 屏蔽任何历史路由工具。
   const core = applyCore(ctx, config)
   if (!core) return undefined
   registerCommunityMarket(ctx)
@@ -61,7 +60,10 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
 
   let orchestrator: WorkOrchestrator | undefined
   try {
-    orchestrator = registerWorkOrchestrator(ctx, core, { events: companyEventBus })
+    orchestrator = registerWorkOrchestrator(ctx, core, {
+      events: companyEventBus,
+      sessionFile: config?.workSessionFile,
+    })
   } catch (error) {
     warn(ctx, 'Work Orchestrator', error)
   }
@@ -107,7 +109,6 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     communication = registerCommunication(ctx, config, { events: companyEventBus })
     if (communication) {
       communication.setRoster(rosterOf(core.employees))
-      // 外部渠道只负责 transport / ACL / reply；员工选择与协作全部复用同一个 Orchestrator。
       communication.setDispatcher(orchestrator ? ((request) => orchestrator!.run(request)) : null)
     }
   } catch (error) {
