@@ -5,10 +5,12 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import {
   DSH_IM_INSTALL_COMMAND,
+  createDshImWeixinActions,
   type DshImProvisioning,
   type DshImStatus,
   type DshImWeixinActions,
 } from '../dsh-im-bridge'
+import { currentOrgPanelRpc } from '../rpc'
 import { ActionButton, Empty, SettingsCard, SettingsRow, StatusPill } from './styles'
 
 function errorText(error: unknown): string {
@@ -51,8 +53,12 @@ export function DshImWeixinSettings(props: {
   actions?: DshImWeixinActions
   onConnected?(): void
 }) {
-  const actionsRef = useRef(props.actions)
-  actionsRef.current = props.actions
+  // dsh-im 与 /org-panel 是平级插件频道。即使 org-panel 的 Control Plane 暂时离线，
+  // 只要 DSH connection.rpc 还在，就应该独立探测 /weixin，而不是被本插件状态连坐。
+  const fallbackActions = createDshImWeixinActions(currentOrgPanelRpc())
+  const effectiveActions = props.actions || fallbackActions
+  const actionsRef = useRef<DshImWeixinActions>(effectiveActions)
+  actionsRef.current = effectiveActions
   const timer = useRef<any>(null)
   const stopped = useRef(false)
   const [snapshot, setSnapshot] = useState<DshImStatus | null>(null)
@@ -71,12 +77,6 @@ export function DshImWeixinSettings(props: {
 
   const load = async () => {
     const actions = actionsRef.current
-    if (!actions) {
-      setLoading(false)
-      setMissing(false)
-      setError('当前运行时没有 client↔host RPC，无法探测 dsh-im。')
-      return
-    }
     setLoading(true)
     try {
       const value = await actions.status()
@@ -100,7 +100,7 @@ export function DshImWeixinSettings(props: {
     if (['connected', 'expired', 'failed', 'cancelled', 'needs_verification'].includes(current.status)) return
     timer.current = setTimeout(async () => {
       const actions = actionsRef.current
-      if (!actions || stopped.current) return
+      if (stopped.current) return
       try {
         const next = await actions.poll(current.attemptId)
         if (stopped.current) return
@@ -127,13 +127,13 @@ export function DshImWeixinSettings(props: {
       clearTimer()
       clearInterval(clock)
     }
-    // 是否有 RPC 是这里真正的生命周期边界；actions 对象本身可能随父组件重建。
+    // actionsRef 始终指向最新实现；只在组件生命周期起一次探测，避免父组件对象重建造成轮询重置。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [Boolean(props.actions)])
+  }, [])
 
   const begin = async () => {
     const actions = actionsRef.current
-    if (!actions || busy) return
+    if (busy) return
     setBusy(true)
     setError(null)
     setVerifyCode('')
@@ -151,7 +151,7 @@ export function DshImWeixinSettings(props: {
 
   const cancel = async () => {
     const actions = actionsRef.current
-    if (!actions || !provision || busy) return
+    if (!provision || busy) return
     setBusy(true)
     clearTimer()
     try {
@@ -166,7 +166,7 @@ export function DshImWeixinSettings(props: {
 
   const verify = async () => {
     const actions = actionsRef.current
-    if (!actions || !provision || busy) return
+    if (!provision || busy) return
     if (!/^\d{4,8}$/.test(verifyCode)) {
       setError('请输入手机微信显示的 4～8 位数字配对码。')
       return
@@ -239,11 +239,11 @@ export function DshImWeixinSettings(props: {
         h(StatusPill, { key: 'state', tone: account.connected ? 'ok' : account.state === 'error' ? 'bad' : 'warn', label: account.connected ? '在线' : account.state }),
         h(ActionButton, {
           key: 'reconnect', label: account.connected ? '检查连接' : '重连',
-          run: props.actions ? (() => props.actions!.reconnect(account.botId).then(() => load())) : undefined,
+          run: () => actionsRef.current.reconnect(account.botId).then(() => load()),
         }),
         h(ActionButton, {
           key: 'remove', label: '移除', tone: 'danger',
-          run: props.actions ? (() => props.actions!.remove(account.botId).then(() => load())) : undefined,
+          run: () => actionsRef.current.remove(account.botId).then(() => load()),
           confirm: `确认移除微信账号“${account.name}”吗？dsh-im 会删除该账号保存的连接凭证与会话映射。`,
         }),
       ],
