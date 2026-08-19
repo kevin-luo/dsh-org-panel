@@ -117,7 +117,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
 
   let channel: OrgPanelChannelHandle | undefined
   try {
-    const deps: OrgPanelDeps = { core, gateway, plugins, communication, config }
+    const deps: OrgPanelDeps = { core, orchestrator, gateway, plugins, communication, config }
     channel = registerOrgPanelChannel(ctx, { ...readEndpoints(deps), ...writeEndpoints(deps), ...core.memoryEndpoints })
   } catch (error) {
     warn(ctx, '/org-panel RPC 频道', error)
