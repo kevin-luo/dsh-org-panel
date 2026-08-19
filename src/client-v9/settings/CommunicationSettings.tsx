@@ -7,8 +7,8 @@
 // 员工身份、记忆、技能、履历始终属于赛博公司；IM 插件只负责把消息可靠送进 Harness。
 import { createElement as h, useState } from 'react'
 import { IM_PLATFORMS, type AdapterConnectionState, type AdapterSummary, type ChannelBinding, type CommunicationSummary, type IMPlatform } from '../../integrations/im/types'
-import type { DshImWeixinActions } from '../dsh-im-bridge'
-import { DshImWeixinSettings } from './DshImWeixinSettings'
+import type { DshImChannelActions, DshImWeixinActions } from '../dsh-im-bridge'
+import { DshImChannelSettings } from './DshImChannelSettings'
 import { ActionButton, DASH, Empty, KeyValues, SettingsCard, SettingsRow, StatusPill, Toggle, countText, formatDateTime, type PillTone } from './styles'
 
 const UNKNOWN = '未知'
@@ -40,7 +40,9 @@ export type CommunicationSettingsData = Partial<CommunicationSummary> & {
 }
 
 export type CommunicationSettingsActions = {
-  /** 外部成熟传输：不依赖 org-panel 自己是否实现微信协议。 */
+  /** 统一 dsh-im Provider。当前真实接线：微信 / QQ / 飞书。 */
+  dshIm?: Partial<Record<'weixin' | 'qq' | 'feishu', DshImChannelActions>>
+  /** 兼容旧调用方；新代码优先用 dshIm.weixin。 */
   dshImWeixin?: DshImWeixinActions
   /** 以下是 org-panel 内置 CommunicationManager 的兼容写入口。 */
   setEnabled?(adapterId: string, enabled: boolean): unknown | Promise<unknown>
@@ -118,24 +120,26 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
       h('div', { style: { marginRight: 'auto' } },
         h('b', { style: { display: 'block', fontSize: 13 } }, '公司通讯中枢'),
-        h('span', { style: { color: 'var(--set-muted)', fontSize: 10 } }, '优先复用成熟 DSH IM 传输插件，赛博公司负责员工路由、长期记忆与权限。'),
+        h('span', { style: { color: 'var(--set-muted)', fontSize: 10 } }, '微信、QQ、飞书优先走成熟 DSH IM Provider；赛博公司负责员工路由、长期记忆、履历与权限。'),
       ),
-      h(StatusPill, { tone: 'info', label: '生态优先' }),
+      h(StatusPill, { tone: 'info', label: '生态 Provider' }),
     ),
 
-    // 第一条真实生态融合：直接消费 dsh-im /weixin RPC，扫码、配对码和重连都不经过假 action。
-    h(DshImWeixinSettings, { actions: actions?.dshImWeixin, onConnected: onRefresh }),
+    h('div', { className: 'cy9-set-banner info' }, '推荐接入层：下面三个入口都直接调用 @xmanrui/dsh-im 的公开 RPC。能扫码就扫码；已有机器人也可以手动填官方凭证。'),
+    h(DshImChannelSettings, { platform: 'weixin', actions: actions?.dshIm?.weixin || actions?.dshImWeixin, onConnected: onRefresh }),
+    h(DshImChannelSettings, { platform: 'qq', actions: actions?.dshIm?.qq, onConnected: onRefresh }),
+    h(DshImChannelSettings, { platform: 'feishu', actions: actions?.dshIm?.feishu, onConnected: onRefresh }),
 
     !loaded ? h('div', { className: 'cy9-set-banner' },
       data?.reason
-        ? `面板没有拿到通讯配置摘要 —— 内置通讯 Runtime 的 host 原话：${data.reason}。上方 dsh-im 扫码桥独立探测，不受这个状态影响。`
-        : '面板没有拿到通讯配置摘要。内置 CommunicationManager 暂未返回数据；上方 dsh-im 是独立的 DSH 插件通道，可以照常探测和扫码。',
+        ? `面板没有拿到内置通讯摘要 —— host 原话：${data.reason}。上方 dsh-im Provider 是独立插件频道，不受这个状态影响。`
+        : '内置 CommunicationManager 暂未返回摘要。上方 dsh-im Provider 独立探测，可以照常扫码或绑定机器人。',
     ) : null,
 
     h(SettingsCard, {
       title: '内置通讯 Runtime（兼容层）',
       meta: loaded ? (adapters.length ? `${adapters.filter((item) => item.state === 'connected').length}/${adapters.length} 已连接` : '未配置') : '未读取',
-      note: '这部分保留现有 Feishu / QQ / WeChat Adapter 兼容能力。新接入优先走 DSH 生态插件，避免赛博公司重复维护第三方协议。',
+      note: '保留已有 Feishu / QQ / WeChat Adapter 兼容能力。新用户优先走上方 DSH IM Provider，避免赛博公司重复维护平台协议。',
     },
       IM_PLATFORMS.map((platform) => {
         const adapter = adapters.find((item) => item.platform === platform)
@@ -166,7 +170,7 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
                 : h(ActionButton, {
                   key: 'configure', label: '配置',
                   run: actions?.addChannel ? (() => actions.addChannel!(platform)) : undefined,
-                  hint: '内置渠道创建尚未接线；推荐使用上方 dsh-im，或继续使用 cordis communication.adapters 兼容配置。',
+                  hint: '内置渠道创建尚未接线；推荐使用上方 dsh-im Provider。',
                   onDone: () => onRefresh?.(),
                 }),
             ],
