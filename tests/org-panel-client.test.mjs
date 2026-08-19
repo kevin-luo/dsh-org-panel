@@ -208,12 +208,11 @@ test('org-panel client: 通道 offline 或未探明时不下发任何写 action�
     assert.equal(actions.plugins, undefined, '点了必然报错的按钮不许摆出来')
     assert.equal(actions.models, undefined)
   }
-  // 通道是通的，但 rpc 句柄丢了 —— 同样一个写操作都不给。
   const noRpc = Bridge.buildSettingsActions({ channel: 'online', rpc: null, refresh: () => 'x', openProfile: () => {} })
   assert.equal(noRpc.plugins, undefined)
 })
 
-test('org-panel client: 通道 online 时四个插件动作都真的打到 /org-panel，且不放宽审批语义', async () => {
+test('org-panel client: 通道 online 时插件审批与模型控制动作都真的打到 /org-panel', async () => {
   const { rpc, calls } = fakeRpc(() => ok({ request: { status: 'approved', decision: { channel: 'ui' } } }))
   const actions = Bridge.buildSettingsActions({ channel: 'online', rpc, refresh: () => 'x', openProfile: () => {} })
   await actions.plugins.approve('req-1')
@@ -222,16 +221,29 @@ test('org-panel client: 通道 online 时四个插件动作都真的打到 /org-
   await actions.plugins.healthCheck()
   assert.deepEqual(calls.map((item) => item.endpoint), ['plugins/approve', 'plugins/reject', 'plugins/verify', 'plugins/healthCheck'])
   assert.deepEqual(calls[0].payload, { requestId: 'req-1' })
-  // 面板不下发 status / decision：批不批、记成什么，全由 host 的 PluginRuntime 决定。
   for (const call of calls) {
     assert.equal(call.channel, '/org-panel')
     assert.equal(call.payload.status, undefined)
     assert.equal(call.payload.decision, undefined)
     assert.equal(call.payload.channel, undefined)
   }
-  // setDefault 没有对应端点，就不许出现在 action 表里。
-  assert.equal(actions.models.setDefault, undefined)
-  assert.deepEqual(Object.keys(actions.models).sort(), ['bind', 'setEnabled', 'test'])
+
+  calls.length = 0
+  const provider = { id: 'text-main', type: 'text', provider: 'openai-compatible', model: 'model-x', enabled: true }
+  await actions.models.upsert(provider)
+  await actions.models.remove('text-main')
+  await actions.models.setDefault('text-main')
+  await actions.models.test('text-main')
+  await actions.models.setEnabled('text-main', false)
+  await actions.models.bind('developer', 'text', 'text-main')
+  assert.deepEqual(calls.map((item) => item.endpoint), [
+    'models/upsert', 'models/remove', 'models/setDefault', 'models/test', 'models/setEnabled', 'models/bind',
+  ])
+  assert.deepEqual(calls[0].payload, { provider })
+  assert.deepEqual(calls[1].payload, { providerId: 'text-main' })
+  assert.deepEqual(calls[2].payload, { providerId: 'text-main' })
+  assert.deepEqual(calls[5].payload, { employeeId: 'developer', capability: 'text', providerId: 'text-main' })
+  assert.deepEqual(Object.keys(actions.models).sort(), ['bind', 'remove', 'setDefault', 'setEnabled', 'test', 'upsert'])
 })
 
 test('org-panel client: 通道还在探测时，审批页不宣布「此处无法审批」，也不摆「批准」', () => {
@@ -244,12 +256,10 @@ test('org-panel client: 通道还在探测时，审批页不宣布「此处无�
   assert.match(probing, /正在确认/)
   assert.doesNotMatch(probing, /此处无法审批/, '还没探明就下结论，跟编数据是一回事')
 
-  // 探明是不可用之后，才可以说批不了 —— 而且必须给出真正走得通的两条路。
   const offline = textOf(render(Plugins.PluginSettings, { data: { installed: [], approvals }, actions: {} }, APPROVALS_TAB))
   assert.match(offline, /此处无法审批/)
   assert.match(offline, /pluginInstall\.preapproved/)
   assert.match(offline, /PluginRuntime\.approve/)
-  // 措辞边界：不许再说「DSH 没有 client→host 的 RPC 通道」——那句话是错的。
   assert.doesNotMatch(offline, /没有 client→host 的 RPC 通道/)
   assert.match(offline, /没有提供 \/org-panel RPC 频道/)
 })
@@ -279,20 +289,17 @@ test('org-panel client: host 回 available:false 时不下发空清单，reason 
   const result = await Bridge.fetchOrgPanel(rpc)
   assert.equal(result.channel, 'online')
 
-  // 审批台账：不许出现一个空数组 —— 那会被渲染成「暂无审批记录」。
   assert.equal(result.extra.plugins.approvals, undefined)
   assert.equal(result.extra.plugins.reason, reasons['plugins/approvals'])
   const pluginText = textOf(render(Plugins.PluginSettings, { data: result.extra.plugins, actions: {} }, APPROVALS_TAB))
   assert.match(pluginText, /插件运行时没有挂载/)
   assert.doesNotMatch(pluginText, /暂无审批记录/)
 
-  // 通讯：不许出现空 adapters —— 那会被渲染成「未配置」，而事实是通讯层压根没启动。
   assert.equal(result.extra.communication.adapters, undefined)
   const commText = textOf(render(Communication.CommunicationSettings, { data: result.extra.communication }))
   assert.match(commText, /cordis 配置里没有 communication 段/)
   assert.doesNotMatch(commText, /尚未接入任何外部渠道/)
 
-  // 模型：不许显示成「你还没配」。
   assert.equal(result.extra.models.providers, undefined)
   const modelText = textOf(render(Models.ModelSettings, { data: result.extra.models }))
   assert.match(modelText, /Model Gateway 未挂载/)
@@ -328,13 +335,11 @@ test('org-panel client: 真数据照单接收，快照只认 version 2 的合法
   assert.equal(result.snapshot.generatedAt, snapshot.generatedAt)
   assert.equal(result.extra.plugins.approvals.length, 1)
   assert.equal(result.extra.plugins.health.catalogSize, 12)
-  // 存储页要的是真实路径 / 字节 / mtime，counts 从快照 totals 摊平过来。
   assert.equal(result.extra.storage.dataDir, '/tmp/dsh')
   assert.equal(result.extra.storage.files[0].bytes, 2048)
   assert.equal(result.extra.storage.employees, 15)
   assert.equal(result.extra.storage.tasks, 7)
 
-  // 结构不合法的快照一律丢掉，绝不半信半疑地渲染。
   const bad = fakeRpc((endpoint) => (endpoint === 'company/snapshot' ? ok({ version: 1, employees: {} }) : ok({ available: true })))
   assert.equal((await Bridge.fetchOrgPanel(bad.rpc)).snapshot, null)
 })
@@ -343,14 +348,15 @@ test('org-panel client: 真数据照单接收，快照只认 version 2 的合法
 // 空态必须带下一步
 // ---------------------------------------------------------------------------
 
-test('org-panel client: 模型页「已加载但一个供应商都没有」也要给下一步，而不是一屏空白', () => {
+test('org-panel client: 模型页空状态直接给可操作入口，不再把手改 company.json 当主路径', () => {
   const loaded = textOf(render(Models.ModelSettings, { data: { loaded: true, providers: [], employees: [] } }))
-  assert.match(loaded, /company\.json/, '空态必须指向具体文件')
-  assert.match(loaded, /env: \/ secret:/)
-  assert.match(loaded, /下一步/)
+  assert.match(loaded, /添加模型/)
+  assert.match(loaded, /不需要手动编辑 company\.json/)
+  assert.doesNotMatch(loaded, /下一步：在 .*company\.json/, 'UI 已经能写配置后，不应继续把改文件当主路径')
 
   const blind = textOf(render(Models.ModelSettings, { data: undefined }))
-  assert.match(blind, /尚未读到模型配置/)
+  assert.match(blind, /尚未读到模型配置|当前 \/org-panel 通道没有模型写入能力/)
+  assert.doesNotMatch(blind, /公司还没有模型供应商/, '没拿到数据不能冒充“真的一个都没配”')
 })
 
 test('org-panel client: 插件页每一个空态都带动词或指向具体去处', () => {
