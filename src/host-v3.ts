@@ -1,18 +1,20 @@
 // 「赛博公司」host 装配入口 v3。
 //
-// 分层：host-v2 负责员工 / 记忆 / 技能 / 路由这套核心（8 个工具原样保留），
+// 分层：host-v2 负责员工 / 记忆 / 技能 / 路由这套核心，
 // 这里在它之上把 v2.0 的能力层挂上去，全部复用 host-v2 已经建好的 Store 实例：
 //   1. Community Market —— 真实 DSH 社区插件搜索（只披露不安装）
-//   2. Task Skill Growth —— 真实任务结果自动沉淀 SkillEvidence
-//   3. Model Gateway    —— 多模型能力路由 + vision_analyze（没配模型就如实报错，绝不脑补图片）
-//   4. Plugin Runtime   —— 插件安装申请 / 人类审批 / 真实验证 / 技能证据
-//   5. Communication    —— 飞书 / QQ / 微信 外部渠道（未配置时安静降级）
+//   2. Task Team Runtime —— 任务自动组队；root 只做不可见调度，不再把秘书当主 Agent
+//   3. Task Skill Growth —— 真实任务结果自动沉淀 SkillEvidence
+//   4. Model Gateway    —— 多模型能力路由 + vision_analyze（没配模型就如实报错，绝不脑补图片）
+//   5. Plugin Runtime   —— 插件安装申请 / 人类审批 / 真实验证 / 技能证据
+//   6. Communication    —— 飞书 / QQ / 微信 外部渠道（未配置时安静降级）
 // 再加一条 /org-panel RPC 频道，把上面能力层的真实台账直接送到浏览器里的设置中心。
 //
 // 铁律：同一份 evolution.json / company.json 只能有一个写入者。任何新增能力层都必须
 // 通过 core.store / core.company 复用实例，不允许自己 new 一个。
 import { apply as applyCore, inject as coreInject, type Employee, type OrgPanelCore } from './host-v2'
 import { registerCommunityMarket } from './community-market'
+import { registerTeamRuntime, type TeamRuntimeHandle } from './collaboration/team-runtime'
 import { installTaskSkillGrowth, type TaskSkillGrowthRuntime } from './capabilities/task-skill-growth'
 import { registerModelGateway, type ModelGateway } from './models/gateway'
 import { registerPluginRuntime, type PluginRuntimeHandle } from './capabilities/plugin-runtime'
@@ -29,6 +31,7 @@ export const inject = coreInject
 /** 装配好的能力层实例。宿主与测试拿它做断言，运行时不依赖它。 */
 export type OrgPanelHostFields = {
   core: OrgPanelCore
+  team?: TeamRuntimeHandle
   growth?: TaskSkillGrowthRuntime
   gateway?: ModelGateway
   plugins?: PluginRuntimeHandle | null
@@ -111,16 +114,20 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   if (!core) return undefined
   registerCommunityMarket(ctx)
 
-  // Company Event Bus：host 侧生产者（自动成长 / Plugin Runtime / 通讯层）统一往这里投真实事件。
-  //
-  // 这里以前写的是 `if (!ctx.companyEventBus) ctx.companyEventBus = companyEventBus`。
-  // 在真实 cordis Context 上那是一句**必抛**的代码：读没 inject 过的自定义属性抛
-  // 「cannot get property "companyEventBus" without inject」，写没 provide 过的属性抛
-  // 「cannot set property … in multiple fibers」—— 读写两条路都堵死，没有任何部署形态能跑通。
-  // 现在所有生产者都走显式依赖，不再往 ctx 上挂第二真相来源。
+  // Company Event Bus：host 侧生产者（自动组队 / 自动成长 / Plugin Runtime / 通讯层）统一往这里投真实事件。
+  // 所有生产者都走显式依赖，不往 cordis ctx 上挂第二真相来源。
   companyEventBus.setEmployeeIds(core.employees.map((item) => item.id))
 
-  // 真实任务 → SkillEvidence：直接包住 core.store 的结单入口，所以 staff_chat、会议、外部 IM
+  // Task Team Runtime：产品层彻底取消“秘书 = 主 Agent”。底层 root 只作为 DSH 执行根和调度内核，
+  // company_work 会根据任务自动选择员工，并让员工共享前序同事的真实公开输出；员工还能 @ 新同事动态入场。
+  let team: TeamRuntimeHandle | undefined
+  try {
+    team = registerTeamRuntime(ctx, core, { events: companyEventBus })
+  } catch (error) {
+    warn(ctx, 'Task Team Runtime', error)
+  }
+
+  // 真实任务 → SkillEvidence：直接包住 core.store 的结单入口，所以 company_work、staff_chat、会议、外部 IM
   // 和系统回填共用同一条成长链。只有首次完成、且 outcome 可判定为 success/failed 才记证据。
   let growth: TaskSkillGrowthRuntime | undefined
   try {
@@ -190,6 +197,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     try { growth?.dispose() } catch { /* 恢复失败同样不阻断卸载 */ }
   }) as OrgPanelHost
   host.core = core
+  host.team = team
   host.growth = growth
   host.gateway = gateway
   host.plugins = plugins
