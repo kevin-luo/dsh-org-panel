@@ -1,11 +1,11 @@
-// 「赛博公司」员工档案（需求文档四十四条）：概览 / 技能 / 记忆 / 插件 / 履历。
+// 「赛博公司」员工档案：概览 / 成长 / 技能 / 记忆 / 插件 / 履历。
 //
 // 数据铁律（四十八 / 五十九条）：
 //   1. 所有数字只来自 CompanySnapshot（持久化）或 CompanyRuntime（真实事件），
 //      两者都没有就显示 — / 0 / 暂无，绝不写死任何 KPI。
-//   2. 快照是「空 Session 也能看到历史」的唯一来源（文档 2.1 点名的 bug）：
+//   2. 快照是「空 Session 也能看到历史」的唯一来源：
 //      host 侧桥接层拿到快照后调 setCompanySnapshot()，本模块的所有 UI 自动 hydrate。
-//   3. 本模块只读不写业务状态，不生成时间戳，不制造任务。
+//   3. 本模块只读不写业务状态，不生成时间戳，不制造任务或晋升记录。
 import { createElement as h, useMemo, useState, useSyncExternalStore } from 'react'
 import type { OrgPanelConfig, StaffDef } from '../types'
 import { roleOf } from '../selectors'
@@ -15,6 +15,7 @@ import { companyEventBus } from '../../runtime/event-bus'
 import { EMPLOYEE_RUNTIME_LABEL, type CompanyRuntime, type EmployeeRuntimeState } from '../../runtime/company-events'
 import type { CompanySnapshot, EmployeeMemory, EmployeeSnapshot, MemoryKind } from '../../persistence/types'
 import { OverviewTab } from './OverviewTab'
+import { GrowthTab } from './GrowthTab'
 import { SkillsTab } from './SkillsTab'
 import { MemoryTab } from './MemoryTab'
 import { PluginsTab } from './PluginsTab'
@@ -78,7 +79,7 @@ export function useCompanyRuntime(): CompanyRuntime {
 }
 
 // ---------------------------------------------------------------------------
-// 记忆分页加载（文档四十四条：不要一次加载全部 120 条）
+// 记忆分页加载
 // ---------------------------------------------------------------------------
 
 export type MemoryPageQuery = { employeeId: string; kind: MemoryKind; offset: number; limit: number }
@@ -87,7 +88,7 @@ export type MemoryPage = { items: EmployeeMemory[]; total: number; hasMore: bool
 export type MemoryLoader = (query: MemoryPageQuery) => Promise<MemoryPage>
 
 // ---------------------------------------------------------------------------
-// 样式：styles.ts 属于布局 agent，这里自带一份幂等注入，互不干扰。
+// 样式：自带一份幂等注入，员工档案与成长轨迹一起维护。
 // ---------------------------------------------------------------------------
 
 const PROFILE_STYLE_ID = 'dsh-org-panel-cy9-profile'
@@ -111,7 +112,7 @@ export const PROFILE_CSS = String.raw`
 .cy9-ep-bar{height:4px;border-radius:999px;background:rgba(255,255,255,.06);overflow:hidden}
 .cy9-ep-bar i{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,var(--cyan),var(--violet))}
 .cy9-ep-xp{display:grid;gap:4px}.cy9-ep-xp em{color:var(--dim);font-size:9px;font-style:normal}
-.cy9-ep-tabs{display:grid;grid-template-columns:repeat(5,1fr);gap:4px;padding:8px 12px;border-bottom:1px solid var(--line);background:#0b1423}
+.cy9-ep-tabs{display:grid;grid-template-columns:repeat(6,1fr);gap:4px;padding:8px 12px;border-bottom:1px solid var(--line);background:#0b1423}
 .cy9-ep-tabs button{height:30px;border:0;border-radius:6px;background:transparent;color:var(--muted);font-size:11px;cursor:pointer}
 .cy9-ep-tabs button.on{background:rgba(67,217,255,.12);color:#dff8ff}
 .cy9-ep-body{flex:1 1 auto;min-height:0;overflow:auto;padding:14px 16px}
@@ -166,19 +167,31 @@ button.cy9-ep-item.on{border-color:rgba(163,107,255,.4);background:rgba(163,107,
 .cy9-ep-out{flex:none;padding:2px 6px;border-radius:4px;background:rgba(96,116,149,.14);color:var(--muted);font-size:9px;white-space:nowrap}
 .cy9-ep-out.success,.cy9-ep-out.available{color:var(--green)}.cy9-ep-out.failed,.cy9-ep-out.missing{color:var(--red)}.cy9-ep-out.blocked,.cy9-ep-out.degraded{color:var(--amber)}.cy9-ep-out.partial{color:var(--cyan)}.cy9-ep-out.disabled{color:var(--dim)}
 .cy9-ep-act{margin-top:8px;padding:5px 8px;border:1px solid rgba(163,107,255,.3);border-radius:5px;background:rgba(163,107,255,.08);color:inherit;font-size:9px;cursor:pointer}
+/* 成长页：个人空间是持久化能力的视觉投影；时间线只画真实带时间戳的事实。 */
+.cy9-growth-space{display:grid;grid-template-columns:minmax(180px,.8fr) minmax(0,1.4fr);gap:10px;padding:10px;border:1px solid rgba(163,107,255,.22);border-radius:10px;background:linear-gradient(135deg,rgba(163,107,255,.07),rgba(67,217,255,.025))}
+.cy9-growth-room{display:flex;flex-direction:column;justify-content:center;min-height:92px;padding:10px;border:1px solid rgba(67,217,255,.16);border-radius:8px;background:rgba(4,11,22,.65)}
+.cy9-growth-room b{color:#dff8ff;font-size:14px}.cy9-growth-room span{margin-top:5px;color:var(--cyan);font-size:9px}.cy9-growth-room small{margin-top:8px;color:var(--dim);font-size:8px;line-height:1.5}
+.cy9-growth-equipment{display:flex;align-content:flex-start;flex-wrap:wrap;gap:6px}
+.cy9-growth-equipment span{align-self:flex-start;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.025);font-size:9px}
+.cy9-growth-equipment span.on{border-color:rgba(98,226,163,.25);color:#bff8dc}.cy9-growth-equipment span.off{opacity:.55}.cy9-growth-equipment span.skill{border-color:rgba(163,107,255,.25);color:#e8ddff}
+.cy9-career-timeline{position:relative;margin-top:2px;padding-left:4px}
+.cy9-career-timeline:before{content:'';position:absolute;left:14px;top:10px;bottom:10px;width:1px;background:linear-gradient(180deg,rgba(67,217,255,.32),rgba(163,107,255,.12))}
+.cy9-career-row{position:relative;display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:start;padding:9px 0;border-bottom:1px solid rgba(133,159,202,.08)}
+.cy9-career-icon{position:relative;z-index:1;display:grid;place-items:center;width:22px;height:22px;margin-left:0;border:1px solid rgba(133,159,202,.24);border-radius:50%;background:#0a1323;color:var(--muted);font-size:10px}
+.cy9-career-row.ok .cy9-career-icon{border-color:rgba(98,226,163,.4);color:var(--green)}.cy9-career-row.warn .cy9-career-icon{border-color:rgba(255,190,70,.4);color:var(--amber)}.cy9-career-row.bad .cy9-career-icon{border-color:rgba(255,94,105,.4);color:var(--red)}.cy9-career-row.info .cy9-career-icon{border-color:rgba(67,217,255,.4);color:var(--cyan)}
+.cy9-career-main{min-width:0}.cy9-career-title{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.cy9-career-title b{font-size:10px}.cy9-career-main p{margin:4px 0 0;color:var(--muted);font-size:9px;line-height:1.5}.cy9-career-row>time{color:var(--dim);font:9px ui-monospace,Consolas,monospace;white-space:nowrap}
 .cy9-rail-emp{display:grid;grid-template-columns:28px minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;padding:8px 9px;border:0;border-bottom:1px solid rgba(133,159,202,.09);background:transparent;color:inherit;text-align:left;cursor:pointer}
 .cy9-rail-emp:hover{background:rgba(255,255,255,.03)}
 .cy9-rail-emp>img,.cy9-rail-emp>.cy9-asset-fallback{width:28px;height:28px;border-radius:6px;object-fit:cover}
 .cy9-rail-emp b{display:block;font-size:10px}
 .cy9-rail-emp em{color:var(--dim);font-size:8px;font-style:normal}
 .cy9-rail-emp .lv{flex:none;color:var(--violet);font:700 10px ui-monospace,Consolas,monospace}
-/* 右栏公司状态卡多了一行「累计」，矮屏下必须禁止被 flex 压扁，否则数字会被裁掉。 */
 .cy9-rail .cy9-status-card{flex:0 0 auto}
 .cy9-rail-sub{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:0 8px 8px}
 .cy9-rail-sub>div{padding:6px 4px;border-radius:6px;background:rgba(255,255,255,.025);text-align:center}
 .cy9-rail-sub b{display:block;font:800 12px ui-monospace,Consolas,monospace}
 .cy9-rail-sub span{color:var(--muted);font-size:8px}
-@media(max-width:720px){.cy9-ep-head{grid-template-columns:1fr}.cy9-ep-head>img,.cy9-ep-head>.cy9-asset-fallback{margin:auto}.cy9-ep-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cy9-ep-tabs{grid-template-columns:repeat(3,1fr)}}
+@media(max-width:720px){.cy9-ep-head{grid-template-columns:1fr}.cy9-ep-head>img,.cy9-ep-head>.cy9-asset-fallback{margin:auto}.cy9-ep-kpis{grid-template-columns:repeat(2,minmax(0,1fr))}.cy9-ep-tabs{grid-template-columns:repeat(3,1fr)}.cy9-growth-space{grid-template-columns:1fr}.cy9-career-row{grid-template-columns:28px minmax(0,1fr)}.cy9-career-row>time{grid-column:2}}
 `
 
 /** 幂等注入档案样式。多次调用只会插一次 <style>。 */
@@ -196,10 +209,10 @@ installProfileStyles()
 // 档案本体
 // ---------------------------------------------------------------------------
 
-export type ProfileTab = 'overview' | 'skills' | 'memory' | 'plugins' | 'history'
+export type ProfileTab = 'overview' | 'growth' | 'skills' | 'memory' | 'plugins' | 'history'
 
 const TAB_LABELS: Array<[ProfileTab, string]> = [
-  ['overview', '概览'], ['skills', '技能'], ['memory', '记忆'], ['plugins', '插件'], ['history', '履历'],
+  ['overview', '概览'], ['growth', '成长'], ['skills', '技能'], ['memory', '记忆'], ['plugins', '插件'], ['history', '履历'],
 ]
 
 export function EmployeeProfile(props: {
@@ -246,9 +259,9 @@ export function EmployeeProfile(props: {
       h('div', { className: 'cy9-ep-tabs' }, TAB_LABELS.map(([id, label]) => h('button', {
         key: id, type: 'button', className: tab === id ? 'on' : '', onClick: () => setTab(id),
       }, label))),
-      // key 带上员工 id：换人看档案时局部状态（技能展开、记忆分页）必须重置，不能串档。
       h('div', { className: 'cy9-ep-body' },
         tab === 'overview' ? h(OverviewTab, { key: staff.id, staff, role, snapshot, runtime }) : null,
+        tab === 'growth' ? h(GrowthTab, { key: staff.id, snapshot }) : null,
         tab === 'skills' ? h(SkillsTab, { key: staff.id, snapshot }) : null,
         tab === 'memory' ? h(MemoryTab, { key: staff.id, employeeId: staff.id, snapshot, loadMemories }) : null,
         tab === 'plugins' ? h(PluginsTab, { key: staff.id, staff, snapshot, onDraft }) : null,
@@ -256,7 +269,7 @@ export function EmployeeProfile(props: {
       ),
       h('div', { className: 'cy9-ep-foot' },
         h('button', { type: 'button', onClick: () => { onTalk(staff); onClose() } }, `@${staff.name} 直接对话`),
-        h('button', { type: 'button', onClick: () => { onDraft(`@${staff.name} 复盘一下你最近的任务：哪些做成了、哪些卡住了、下次怎么改进。`); onClose() } }, '让他复盘最近工作'),
+        h('button', { type: 'button', onClick: () => { onDraft(`@${staff.name} 结合你的长期记忆、任务履历和真实技能证据，复盘最近工作并提出一个最值得补强的能力；先扫描公司现有能力和插件，不要虚构升级。`); onClose() } }, '安排成长复盘'),
         h('em', null, snapshot ? `档案更新于 ${new Date(snapshot.updatedAt).toLocaleString('zh-CN')}` : '档案数据来自本机 evolution.json'),
       ),
     ),
