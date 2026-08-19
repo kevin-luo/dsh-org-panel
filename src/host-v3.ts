@@ -9,6 +9,7 @@ import { registerCommunityMarket } from './community-market'
 import { registerWorkOrchestrator, type WorkOrchestrator } from './collaboration/work-orchestrator'
 import { installTaskSkillGrowth, type TaskSkillGrowthRuntime } from './capabilities/task-skill-growth'
 import { registerModelGateway, type ModelGateway } from './models/gateway'
+import { listDshProviderRoutes } from './models/employee-agent-route'
 import { registerPluginRuntime, type PluginRuntimeHandle } from './capabilities/plugin-runtime'
 import { registerCommunication, type CommunicationManager } from './integrations/im/manager'
 import type { RosterEntry } from './integrations/im/types'
@@ -18,7 +19,6 @@ import { registerOrgPanelChannel, type OrgPanelChannelHandle } from './host/org-
 import { companyEventBus } from './runtime/event-bus'
 import type { CompanyEvent } from './runtime/company-events'
 
-// Host 自己需要 systemPrompt 来注册不可见调度内核规则；Employee Runtime 本身不依赖 systemPrompt。
 export const inject = ['tools', 'subagents', 'systemPrompt']
 
 export type OrgPanelHostFields = {
@@ -40,14 +40,8 @@ function warn(ctx: any, layer: string, error: unknown): void {
 
 function rosterOf(employees: Employee[]): RosterEntry[] {
   return employees.map((item) => ({
-    id: item.id,
-    name: item.name,
-    role: item.role,
-    emoji: item.emoji,
-    department: item.department,
-    brief: item.brief,
-    aliases: item.aliases,
-    keywords: item.capabilities,
+    id: item.id, name: item.name, role: item.role, emoji: item.emoji, department: item.department,
+    brief: item.brief, aliases: item.aliases, keywords: item.capabilities,
   }))
 }
 
@@ -55,18 +49,11 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   const core = applyCore(ctx, config)
   if (!core) return undefined
   registerCommunityMarket(ctx)
-
   companyEventBus.setEmployeeIds(core.employees.map((item) => item.id))
 
   let orchestrator: WorkOrchestrator | undefined
-  try {
-    orchestrator = registerWorkOrchestrator(ctx, core, {
-      events: companyEventBus,
-      sessionFile: config?.workSessionFile,
-    })
-  } catch (error) {
-    warn(ctx, 'Work Orchestrator', error)
-  }
+  try { orchestrator = registerWorkOrchestrator(ctx, core, { events: companyEventBus, sessionFile: config?.workSessionFile }) }
+  catch (error) { warn(ctx, 'Work Orchestrator', error) }
 
   let growth: TaskSkillGrowthRuntime | undefined
   try {
@@ -74,35 +61,22 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
       emit: (event) => companyEventBus.publish(event as CompanyEvent, 'host'),
       onError: (error, task) => warn(ctx, task ? `自动技能成长（${task.employeeId}/${task.id}）` : '自动技能成长', error),
     })
-  } catch (error) {
-    warn(ctx, '自动技能成长', error)
-  }
+  } catch (error) { warn(ctx, '自动技能成长', error) }
 
   let gateway: ModelGateway | undefined
   try {
-    gateway = registerModelGateway(ctx, config, {
-      company: core.company,
-      evolution: core.store,
-      staffIds: core.employees.map((item) => item.id),
-    })
-  } catch (error) {
-    warn(ctx, 'Model Gateway', error)
-  }
+    gateway = registerModelGateway(ctx, config, { company: core.company, evolution: core.store, staffIds: core.employees.map((item) => item.id) })
+  } catch (error) { warn(ctx, 'Model Gateway', error) }
 
   let plugins: PluginRuntimeHandle | null = null
   try {
     plugins = registerPluginRuntime(ctx, {
-      store: core.store,
-      memoryFile: config?.memoryFile,
-      approvalsFile: config?.approvalsFile,
+      store: core.store, memoryFile: config?.memoryFile, approvalsFile: config?.approvalsFile,
       staff: core.employees.map((item) => ({ id: item.id, name: item.name, role: item.role })),
-      pluginInstall: config?.pluginInstall,
-      healthCheckOnStart: config?.healthCheckOnStart,
+      pluginInstall: config?.pluginInstall, healthCheckOnStart: config?.healthCheckOnStart,
       emit: (event) => companyEventBus.publish(event as CompanyEvent, 'host'),
     })
-  } catch (error) {
-    warn(ctx, 'Plugin Runtime', error)
-  }
+  } catch (error) { warn(ctx, 'Plugin Runtime', error) }
 
   let communication: CommunicationManager | undefined
   try {
@@ -111,17 +85,13 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
       communication.setRoster(rosterOf(core.employees))
       communication.setDispatcher(orchestrator ? ((request) => orchestrator!.run(request)) : null)
     }
-  } catch (error) {
-    warn(ctx, '外部通讯层', error)
-  }
+  } catch (error) { warn(ctx, '外部通讯层', error) }
 
   let channel: OrgPanelChannelHandle | undefined
   try {
-    const deps: OrgPanelDeps = { core, orchestrator, gateway, plugins, communication, config }
+    const deps: OrgPanelDeps = { core, orchestrator, gateway, plugins, communication, config, dshProviders: listDshProviderRoutes(ctx) }
     channel = registerOrgPanelChannel(ctx, { ...readEndpoints(deps), ...writeEndpoints(deps), ...core.memoryEndpoints })
-  } catch (error) {
-    warn(ctx, '/org-panel RPC 频道', error)
-  }
+  } catch (error) { warn(ctx, '/org-panel RPC 频道', error) }
 
   const host = (async () => {
     try { await channel?.dispose() } catch {}
