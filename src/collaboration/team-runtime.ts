@@ -171,9 +171,14 @@ export function planTaskTeam(task: string, employees: readonly Employee[], maxTe
       }
     }
   } else if (COMPLEX_TASK.test(text)) {
-    // 老板点名一人做复杂任务时，可以自动补一位真正相关的同事；不会把秘书硬塞进来。
-    const peer = ranked.find((item) => !item.explicit && !picked.some((chosen) => chosen.employeeId === item.employeeId) && item.score >= 22)
-    if (peer) add(peer)
+    // 老板点名的人先锁定；跨岗位任务继续按真实相关性补人直到团队上限。
+    // 只补一位会让“角色设计 + 传播方案”被泛产品角色占掉唯一名额，真正的增长同事反而进不来。
+    for (const peer of ranked) {
+      if (peer.explicit || picked.some((chosen) => chosen.employeeId === peer.employeeId)) continue
+      if (peer.score < 22) break
+      add(peer)
+      if (picked.length >= limit) break
+    }
   }
 
   if (!picked.length) {
@@ -301,7 +306,6 @@ export function registerTeamRuntime(ctx: any, core: OrgPanelCore, options: { eve
           publish({ id: `${teamId}:meeting:join:${employee.id}`, type: 'meeting.started', at: Date.now(), meetingId: teamId, participants: [employee.id], topic: `临时工作组：${clip(task, 80)}` })
         }
 
-        const route = planned.get(employee.id) || scoreEmployee(task, employee)
         const prompt = workPrompt(task, employee, core.employees, turns, [...planned.values()])
         const startedAt = Date.now()
         publish({ id: `${teamId}:task:assigned:${employee.id}`, type: 'task.assigned', at: startedAt, employeeId: employee.id, taskId: `${teamId}:${employee.id}`, title: clip(task, 60), source: 'web', channelId: teamId })
