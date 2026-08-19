@@ -12,6 +12,7 @@ import { EmployeeProfile } from './employee-profile/EmployeeProfile'
 import { CompanySettings, settingsDataFromSnapshot } from './settings/CompanySettings'
 import { buildSettingsActions, REFRESH_PROMPT, REFRESH_RESULT, SOURCE_LABEL, useOrgPanel, useSessionEventChannel } from './company-bridge'
 import { usePersistentGrowthRefresh } from './growth-snapshot-sync'
+import { useRecentWorkgroups } from './work-sessions'
 import { composerTextarea, joinDraft, scheduleFocus, writeDraft } from './composer'
 import type { OrgPanelRpc } from './rpc'
 
@@ -56,8 +57,8 @@ export function CompanyView(props: any) {
   const plugins = useMemo(() => extractMarketPlugins(nodes), [nodes])
   useSessionEventChannel(nodes, runningCalls, roles, staff)
   const orgPanel = useOrgPanel(nodes, rpc, settingsOpen)
+  const workgroups = useRecentWorkgroups(rpc, `${messages.length}:${running ? 1 : 0}`)
   // Company Event 负责“马上告诉 UI 技能变了”，CompanySnapshot 才是 Lv / XP / Evidence 的权威来源。
-  // 新技能事件抵达后去抖刷新一次快照，避免办公室已经亮升级、档案还停在旧等级。
   usePersistentGrowthRefresh(orgPanel.refresh)
   const snapshot = orgPanel.snapshot
   const typingStaff = useMemo(() => partial ? latestDirectEmployee(nodes, staff) : null, [partial, nodes, staff])
@@ -138,6 +139,7 @@ export function CompanyView(props: any) {
         }),
         h(CollaborationPanel, {
           channels: DEFAULT_CHANNELS, channelId, onChannel: setChannelId, messages, staff, runningCalls, typingStaff, running, promptError,
+          workgroups,
           activeStaffId, onClearStaffFilter: () => setActiveStaffId(null), collapsed: chatCollapsed, onToggleCollapsed: () => setChatCollapsed((value) => !value),
           height: chatHeight, onHeight: setChatHeight,
           thread, onOpenThread: setThread, onCloseThread: () => setThread(null),
