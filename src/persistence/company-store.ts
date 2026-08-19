@@ -1,7 +1,7 @@
 // CompanyStore：公司级配置（company.json）+ CompanySnapshot 组装。
-// 需求文档 2.1 的核心修复点：前端在一个全新的空 Session 里也必须能一次性拿回全部员工的
-// level / xp / statistics / skills / plugins / models / 最近履历，而不是只显示本 Session 的 Tool Event。
-// 安全铁律（三十一条）：company.json 只存 SecretRef（env:XXX / secret:XXX），明文密钥一律拒绝落盘。
+// 前端在一个全新的空 Session 里也必须能一次性拿回全部员工的
+// level / xp / statistics / skills / plugins / models / 最近履历。
+// 安全铁律：company.json 只存 SecretRef（env:XXX / secret:XXX），明文密钥一律拒绝落盘。
 import { readFile, mkdir, writeFile, rename } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -21,7 +21,6 @@ export type SnapshotOptions = {
   memoryLimit?: number
   skillLimit?: number
   evidenceLimit?: number
-  /** 名册里没有、但 evolution.json 里存在的员工是否也纳入快照。默认不纳入。 */
   includeUnknown?: boolean
 }
 
@@ -30,7 +29,6 @@ function clamp(value: number, min: number, max: number) { return Math.max(min, M
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T }
 function text(value: unknown, fallback = ''): string { const out = typeof value === 'string' ? value.trim() : ''; return out || fallback }
 
-/** 任何明文密钥字段都直接拒绝，避免调用方顺手把 apiKey 塞进配置。 */
 function assertNoRawSecret(input: any) {
   for (const field of RAW_SECRET_FIELDS) {
     if (input && Object.prototype.hasOwnProperty.call(input, field) && input[field]) {
@@ -39,11 +37,6 @@ function assertNoRawSecret(input: any) {
   }
 }
 
-/**
- * 供应商配置的唯一校验口径：cordis 配置入口、host 工具、前端写入全部走这一份，
- * 避免「配置文件里能塞明文密钥、工具里不能」这种双标。导出给 models/gateway.ts 的
- * 配置解析复用；调用方不需要先造一个 CompanyStore 就能校验一行配置。
- */
 export function sanitizeModelProvider(input: any): ModelProviderConfig {
   return sanitizeProvider(input)
 }
@@ -59,9 +52,12 @@ function sanitizeProvider(input: any): ModelProviderConfig {
   const apiKeyRef = input?.apiKeyRef
   if (apiKeyRef !== undefined && !isSecretRef(apiKeyRef)) throw new Error('apiKeyRef must look like env:XXX or secret:XXX')
   const timeout = Number(input?.timeout)
+  const dshProvider = text(input?.dshProvider) || undefined
+  if (dshProvider && type !== 'text') throw new Error('dshProvider is only valid for text model providers')
   return {
     id, type, provider, model,
     baseUrl: text(input?.baseUrl) || undefined,
+    dshProvider,
     apiKeyRef: apiKeyRef === undefined ? undefined : apiKeyRef,
     timeout: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined,
     enabled: input?.enabled !== false,
@@ -72,7 +68,7 @@ function sanitizeProfile(raw: any): CompanyProfile {
   const fallback = emptyCompanyProfile()
   const providers: ModelProviderConfig[] = []
   for (const item of Array.isArray(raw?.modelProviders) ? raw.modelProviders : []) {
-    try { providers.push(sanitizeProvider(item)) } catch { /* 坏行直接丢弃，不让脏配置阻断整个公司启动 */ }
+    try { providers.push(sanitizeProvider(item)) } catch { }
   }
   return {
     version: 2,
@@ -85,6 +81,7 @@ function sanitizeProfile(raw: any): CompanyProfile {
 function summarizeProvider(config: ModelProviderConfig): ModelProviderSummary {
   return {
     id: config.id, type: config.type, provider: config.provider, model: config.model, baseUrl: config.baseUrl,
+    dshProvider: config.dshProvider,
     apiKeyRef: config.apiKeyRef, apiKeyConfigured: !!config.apiKeyRef, enabled: config.enabled,
   }
 }
@@ -110,7 +107,7 @@ export class CompanyStore {
     let raw = ''
     try { raw = await readFile(this.filePath, 'utf-8') } catch { raw = '' }
     if (!raw.trim()) return
-    try { this.state = sanitizeProfile(JSON.parse(raw)) } catch { /* 解析失败保持空配置 */ }
+    try { this.state = sanitizeProfile(JSON.parse(raw)) } catch { }
   }
 
   private async persist() {
@@ -130,16 +127,10 @@ export class CompanyStore {
         const value = await work()
         await this.persist()
         resolveResult(value)
-      } catch (error) {
-        rejectResult(error)
-      }
+      } catch (error) { rejectResult(error) }
     })
     return result
   }
-
-  // -------------------------------------------------------------------------
-  // 公司配置
-  // -------------------------------------------------------------------------
 
   async profile(): Promise<CompanyProfile> {
     await this.ensureLoaded()
@@ -177,12 +168,6 @@ export class CompanyStore {
     })
   }
 
-  /**
-   * 把某个供应商移动到同能力类型的兜底链首位。
-   * Model Gateway 对 company.modelProviders(type) 的返回顺序有真实语义：员工没有显式绑定时，
-   * 第一个已启用且协议可用的供应商就是公司默认。因此“设为默认”必须落到持久化顺序，
-   * 不能只在前端打一个 isDefault 标签。
-   */
   async setDefaultModelProvider(providerId: string): Promise<ModelProviderConfig> {
     return this.mutate(() => {
       const index = this.state.modelProviders.findIndex((item) => item.id === providerId)
@@ -201,15 +186,10 @@ export class CompanyStore {
     return clone(this.state.modelProviders.filter((item) => !type || item.type === type))
   }
 
-  /** 下发给 UI 的供应商列表：不含密钥，只告诉前端是否已配置。 */
   async modelProviderSummaries(): Promise<ModelProviderSummary[]> {
     const providers = await this.modelProviders()
     return providers.map(summarizeProvider)
   }
-
-  // -------------------------------------------------------------------------
-  // 快照
-  // -------------------------------------------------------------------------
 
   async employeeSnapshot(identity: EmployeeIdentity, options: SnapshotOptions = {}): Promise<EmployeeSnapshot> {
     const profile = await this.evolution.profile(identity.id)
@@ -245,7 +225,6 @@ export class CompanyStore {
     }
   }
 
-  /** 一次性返回整家公司的持久化状态，供前端空 Session hydrate。 */
   async snapshot(roster: EmployeeIdentity[], options: SnapshotOptions = {}): Promise<CompanySnapshot> {
     const [company, providers] = await Promise.all([this.profile(), this.modelProviderSummaries()])
     const identities = roster.slice()
