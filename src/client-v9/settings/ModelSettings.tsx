@@ -9,7 +9,6 @@ import type {
 import { CAPABILITY_PROVIDER_TYPE } from '../../models/types'
 import { ActionButton, Empty, SecretChip, SettingsCard, SettingsRow, SelectField, StatusPill, Toggle, formatDateTime, type PillTone } from './styles'
 
-/** type → capability 的反查表：正向表在 models/types.ts，这里反转，保证两侧永远一致。 */
 const CAPABILITY_OF_TYPE = Object.fromEntries(
   Object.entries(CAPABILITY_PROVIDER_TYPE).map(([capability, type]) => [type, capability]),
 ) as Record<ModelProviderType, ModelCapability>
@@ -29,11 +28,9 @@ const VENDORS: Array<{ value: ModelProviderVendor; label: string }> = [
 ]
 
 export type ModelProviderRow = ModelProviderSummary & {
-  /** 已注册的协议适配器名；null / undefined 表示 registry 里没有这个协议，供应商实际不可用。 */
   adapter?: string | null
   apiKeySource?: string
   apiKeyMasked?: string
-  /** 由 host 明确指定的默认供应商；不传时按「兜底链首位」推断。 */
   isDefault?: boolean
   lastTestAt?: number
   lastTestOk?: boolean
@@ -45,14 +42,11 @@ export type ModelEmployeeRow = { id: string; name: string; role?: string; bindin
 export type ModelSettingsData = {
   providers?: ModelProviderRow[]
   employees?: ModelEmployeeRow[]
-  /** Gateway.capabilityStatus 的结果：这项能力当前到底能不能用。 */
   capabilities?: Partial<Record<ModelCapability, { configured: boolean; providerIds?: string[] }>>
-  /** host 明确回答「Model Gateway 本次没挂上」时给的真实原因。有它就原样上屏，绝不显示成「一个都没配」。 */
   reason?: string
   loaded?: boolean
 }
 
-/** checked 区分「真的发过一次请求」和「只核对了配置与密钥」；后者绝不许说成「连接成功」。 */
 export type ModelTestResult = { ok: boolean; message?: string; durationMs?: number; checked?: 'config-only' | 'live-call' }
 
 export type ModelSettingsActions = {
@@ -87,7 +81,6 @@ function draftOf(row: ModelProviderRow): ProviderDraft {
     model: row.model,
     baseUrl: row.baseUrl || '',
     apiKeyRef: row.apiKeyRef ? String(row.apiKeyRef) : '',
-    // 安全摘要当前不下发 timeout；编辑时留空，由 host 保留原值，避免一次普通编辑把隐藏配置抹掉。
     timeout: '',
     enabled: row.enabled,
   }
@@ -117,7 +110,6 @@ function providerOf(draft: ProviderDraft): ModelProviderConfig {
 
 function providerState(row: ModelProviderRow): { tone: PillTone; label: string; title?: string } {
   if (!row.enabled) return { tone: 'off', label: '已禁用' }
-  // adapter 明确为 null 才是「registry 里没这个协议」；undefined 表示 host 没下发这个字段，不能据此判死。
   if (row.adapter === null) return { tone: 'bad', label: '协议未注册', title: `registry 里没有 ${row.provider} 协议适配器` }
   if (row.apiKeyRef && !row.apiKeyConfigured) return { tone: 'bad', label: '密钥未生效', title: '配置里写了引用，但运行时没取到值' }
   if (!row.apiKeyRef) return { tone: 'warn', label: '未配置密钥' }
@@ -131,7 +123,6 @@ function testMessage(value: unknown): string {
   if (result && typeof result === 'object' && typeof result.ok === 'boolean') {
     const suffix = typeof result.durationMs === 'number' ? ` · ${Math.round(result.durationMs)}ms` : ''
     if (!result.ok) throw new Error(result.message || '连接失败')
-    // host 没给文案时的兜底也必须分清楚：config-only 只是配置核对通过，不代表这个模型真的能用。
     const fallback = result.checked === 'config-only' ? '只核对了配置与密钥，没有发真实请求' : '连接成功'
     return `${result.message || fallback}${suffix}`
   }
@@ -286,7 +277,8 @@ export function ModelSettings(props: { data?: ModelSettingsData; actions?: Model
         }, '添加'),
       ]
       if (rows.length) headerActions.push(h('button', {
-        key: 'binding', type: 'button', className: 'cy9-set-btn', onClick: () => setOpenBinding((current) => current === group.type ? null : group.type),
+        key: 'binding', type: 'button', className: 'cy9-set-btn', disabled: false, title: '配置员工对此能力的显式模型绑定',
+        onClick: () => setOpenBinding((current) => current === group.type ? null : group.type),
       }, openBinding === group.type ? '收起员工绑定' : '员工绑定'))
       return h(SettingsCard, {
         key: group.type,
