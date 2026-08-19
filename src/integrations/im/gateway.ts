@@ -5,7 +5,7 @@
 import {
   SAFE_PERMISSION_FLOOR, minPermission, normalizeActorRole,
   type AccessDecision, type AdapterStatus, type CommunicationAdapterConfig, type CommunicationEventSink,
-  type CommunicationLogger, type ExternalMessage, type IMAdapter, type OutgoingMessage,
+  type CommunicationLogger, type ExternalMessage, type IMAdapter, type IMMessageHandler, type OutgoingMessage,
 } from './types'
 
 const DEDUPE_TTL = 10 * 60 * 1000
@@ -45,7 +45,7 @@ export function evaluateAccess(config: CommunicationAdapterConfig, message: Exte
 export class IMGateway {
   private readonly entries = new Map<string, Entry>()
   private readonly seen = new Map<string, number>()
-  private handler: ((message: ExternalMessage) => void) | null = null
+  private handler: IMMessageHandler | null = null
   private started = false
 
   constructor(private readonly deps: { logger?: CommunicationLogger; events?: CommunicationEventSink } = {}) {}
@@ -53,10 +53,12 @@ export class IMGateway {
   register(adapter: IMAdapter, config: CommunicationAdapterConfig): void {
     if (this.entries.has(adapter.id)) throw new Error(`通讯渠道 id 重复：${adapter.id}`)
     this.entries.set(adapter.id, { adapter, config })
+    // 把 Promise 原样交还 Adapter。支持等待回调的 Adapter / 测试探针可以等到 Router 真实处理完；
+    // 不等待的第三方 Adapter 仍保持原行为，不改变兼容性。
     adapter.onMessage((message) => this.ingest(adapter.id, message))
   }
 
-  onMessage(handler: (message: ExternalMessage) => void): void {
+  onMessage(handler: IMMessageHandler): void {
     this.handler = handler
   }
 
@@ -116,8 +118,8 @@ export class IMGateway {
     }
   }
 
-  /** Adapter 回调入口：去重 → 安全裁决 → 交给 Router。 */
-  private ingest(adapterId: string, raw: ExternalMessage): void {
+  /** Adapter 回调入口：去重 → 安全裁决 → 交给 Router，并等待这一条真实处理链结束。 */
+  private async ingest(adapterId: string, raw: ExternalMessage): Promise<void> {
     const entry = this.entries.get(adapterId)
     if (!entry) return
     const message: ExternalMessage = { ...raw, adapterId }
@@ -141,7 +143,7 @@ export class IMGateway {
       return
     }
     try {
-      this.handler(stamped)
+      await this.handler(stamped)
     } catch (error) {
       this.deps.logger?.error?.(`dsh-org-panel: 处理外部消息失败：${describeError(error)}`)
     }
