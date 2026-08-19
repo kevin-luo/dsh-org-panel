@@ -59,7 +59,10 @@ export type WorkSessionTurn = {
 export type WorkSession = {
   id: string
   key: string
+  /** 工作组成立时的初始目标，后续轮次不覆盖。 */
   goal: string
+  /** 最近一轮老板 / 外部会话正在推进的任务。 */
+  currentTask: string
   status: WorkSessionStatus
   origin: WorkSessionOrigin
   participants: WorkSessionParticipant[]
@@ -100,11 +103,21 @@ function sanitizeOrigin(raw: any, fallbackSource: TaskSource = 'system'): WorkSe
   }
 }
 
+function mergeOrigin(previous: WorkSessionOrigin, incoming: WorkSessionOrigin): WorkSessionOrigin {
+  const merged: WorkSessionOrigin = { ...previous, source: incoming.source || previous.source, platform: incoming.platform || previous.platform }
+  for (const key of ['channelId', 'conversationId', 'threadId', 'senderId', 'senderName'] as const) {
+    const value = incoming[key]
+    if (value !== undefined && value !== '') merged[key] = value
+  }
+  return merged
+}
+
 function sanitizeSession(raw: any, key: string, time: number): WorkSession | null {
   if (!raw || typeof raw !== 'object') return null
   const id = text(raw.id) || uid('work')
   const goal = text(raw.goal)
   if (!goal) return null
+  const currentTask = text(raw.currentTask) || text(raw.messages?.[raw.messages?.length - 1]?.text) || goal
   const createdAt = stamp(raw.createdAt, time)
   const participants: WorkSessionParticipant[] = (Array.isArray(raw.participants) ? raw.participants : []).map((item: any) => ({
     employeeId: text(item?.employeeId) || '', employeeName: text(item?.employeeName) || text(item?.employeeId) || '', role: text(item?.role) || '',
@@ -121,7 +134,7 @@ function sanitizeSession(raw: any, key: string, time: number): WorkSession | nul
     taskId: text(item?.taskId), tools: list(item?.tools), policyViolation: item?.policyViolation === true,
   })).filter((item: WorkSessionTurn) => item.employeeId).slice(-WORK_SESSION_LIMITS.turns)
   return {
-    id, key, goal,
+    id, key, goal, currentTask,
     status: ['active', 'blocked', 'completed'].includes(String(raw.status)) ? raw.status : 'active',
     origin: sanitizeOrigin(raw.origin), participants, messages, turns,
     createdAt, updatedAt: stamp(raw.updatedAt, createdAt),
@@ -130,6 +143,7 @@ function sanitizeSession(raw: any, key: string, time: number): WorkSession | nul
 
 export class WorkSessionStore {
   readonly filePath: string
+  corruptBackupPath: string | null = null
   private state: WorkSessionFile = { version: 1, sessions: {} }
   private loaded: Promise<void> | null = null
   private queue: Promise<void> = Promise.resolve()
@@ -158,8 +172,13 @@ export class WorkSessionStore {
       this.state = { version: WORK_SESSION_VERSION, sessions }
       this.trimSessions()
     } catch {
-      // 协作上下文损坏时不允许下一次写入覆盖原文件。与员工档案相比它可重建，但仍是用户历史。
-      throw new Error(`${this.filePath} 解析失败。为避免覆盖历史工作组，本次运行拒绝写入；请先手动备份或修复该文件。`)
+      const backup = `${this.filePath}.corrupt.bak`
+      try {
+        await mkdir(dirname(backup), { recursive: true })
+        try { await readFile(backup, 'utf-8') } catch { await writeFile(backup, raw, 'utf-8') }
+        this.corruptBackupPath = backup
+      } catch {}
+      throw new Error(`${this.filePath} 解析失败。${this.corruptBackupPath ? `损坏原文已备份到 ${this.corruptBackupPath}；` : ''}为避免覆盖历史工作组，本次运行拒绝写入；请先修复该文件。`)
     }
   }
 
@@ -206,20 +225,20 @@ export class WorkSessionStore {
   async open(input: WorkSessionOpenInput): Promise<WorkSession> {
     return this.mutate(() => {
       const key = String(input.key || '').trim()
-      const goal = String(input.goal || '').trim()
-      if (!key || !goal) throw new Error('WorkSession requires key + goal')
+      const task = String(input.goal || '').trim()
+      if (!key || !task) throw new Error('WorkSession requires key + goal')
       const time = now()
       let session = this.state.sessions[key]
       if (!session) {
         session = {
-          id: uid('work'), key, goal, status: 'active', origin: sanitizeOrigin(input, input.source),
+          id: uid('work'), key, goal: task, currentTask: task, status: 'active', origin: sanitizeOrigin(input, input.source),
           participants: [], messages: [], turns: [], createdAt: time, updatedAt: time,
         }
         this.state.sessions[key] = session
       } else {
-        session.goal = goal
+        session.currentTask = task
         session.status = 'active'
-        session.origin = { ...session.origin, ...sanitizeOrigin(input, session.origin.source) }
+        session.origin = mergeOrigin(session.origin, sanitizeOrigin(input, session.origin.source))
         session.updatedAt = time
       }
       const messageText = text(input.messageText)
