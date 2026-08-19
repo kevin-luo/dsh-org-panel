@@ -1,16 +1,12 @@
-// 赛博公司 Work Orchestrator：全渠道唯一的任务协作入口。
+// Work Orchestrator：全渠道唯一业务协作入口。
 //
-// 架构约束：
-// - DSH root session 只是不可见执行根，不属于员工名册，也不产生业务观点；
-// - Web / 飞书 / QQ / 微信统一把任务交给本 Orchestrator；渠道层只负责传输、鉴权、回信；
-// - 任务按语义自动选择 1~4 名真实员工，明确 @ 优先，跨岗位任务自动补人；
-// - 员工共享同一工作组的前序真实输出，并可在公开回复中 @ 同事动态邀请加入；
-// - 每位员工仍通过 core.dispatch 执行，因此长期记忆、履历、技能证据、插件/模型绑定都属于本人；
-// - 秘书只是行政岗位。普通任务没有任何“秘书兜底 / 主 Agent”特权。
+// root session 只是不可见调度内核；真实业务输出来自具体数字员工。
+// Web / 飞书 / QQ / 微信都把任务交到这里：自动组队、共享上下文、动态邀请、真实履历与成长。
 import { ROLE_BLUEPRINTS } from '../org-blueprints'
 import type { Employee, OrgPanelCore } from '../host-v2'
 import type { TaskSource } from '../persistence/types'
 import type { CompanyEvent } from '../runtime/company-events'
+import { WorkSessionStore, type WorkSessionTurn } from './work-session-store'
 
 export const COMPANY_WORK_TOOL = 'company_work'
 export const MAX_WORKGROUP_SIZE = 4
@@ -35,15 +31,18 @@ export type WorkRequest = {
   source?: TaskSource
   platform?: string
   channelId?: string
+  conversationId?: string
+  messageId?: string
+  threadId?: string
+  senderId?: string
   senderName?: string
+  /** 显式会话键优先；缺省按 platform/conversation/thread 自动复用长期工作组。 */
+  sessionKey?: string
   permissionMode?: string
   attachments?: readonly WorkAttachment[]
-  /** 群权限可限制允许激活的员工；缺省表示整家公司可参与。 */
   allowedEmployeeIds?: readonly string[]
   maxTeam?: number
-  /** 外部只读渠道把写策略传进来。Web 默认可写。 */
   writePolicy?: WorkPolicy
-  /** Web tool-call 会显式传当前 root agent；外部渠道可复用 core 已记住的真实执行根。 */
   agent?: unknown
   signal?: AbortSignal
 }
@@ -73,15 +72,14 @@ export type WorkTurn = {
   taskId?: string
   tools: string[]
   error?: string
-  /** 只读来源真实观测到写工具时为 true；渠道层必须拦掉这条回复。 */
   policyViolation: boolean
 }
 
 export type WorkResult = {
-  /** 继续复用现有 NIUMA_MEETING UI 协议；产品语义已经是动态工作组。 */
   kind: 'meeting'
   topic: string
   task: string
+  /** 稳定工作组 ID：同一外部会话 / Web Session 跨轮复用。 */
   teamId: string
   source: TaskSource
   platform: string
@@ -92,6 +90,7 @@ export type WorkResult = {
 
 export type WorkOrchestrator = {
   toolName: typeof COMPANY_WORK_TOOL
+  sessions: WorkSessionStore
   plan(task: string, options?: { maxTeam?: number; allowedEmployeeIds?: readonly string[] }): WorkPlan
   run(request: WorkRequest): Promise<WorkResult>
 }
@@ -119,36 +118,20 @@ const DOMAIN_RULES: DomainRule[] = [
 
 const COMPLEX_TASK = /(完整|系统|全流程|从.+到|一起|协作|评审|方案|规划|设计并|实现并|分析并|先.+再|同时|多个|端到端|一整套)/i
 
-function normalized(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase()
-}
-
-function uniq<T>(values: T[]): T[] {
-  return [...new Set(values)]
-}
-
-function clip(value: unknown, max: number): string {
-  const text = String(value ?? '').replace(/\s+/g, ' ').trim()
-  return text.length > max ? `${text.slice(0, max)}…` : text
-}
+function normalized(value: unknown): string { return String(value ?? '').trim().toLowerCase() }
+function uniq<T>(values: T[]): T[] { return [...new Set(values)] }
+function clip(value: unknown, max: number): string { const text = String(value ?? '').replace(/\s+/g, ' ').trim(); return text.length > max ? `${text.slice(0, max)}…` : text }
 
 function roleKeywords(employee: Employee): string[] {
   const blueprint = ROLE_BLUEPRINTS.find((item) => item.id === employee.id)
-  return uniq([
-    ...(blueprint?.keywords || []),
-    ...(employee.capabilities || []),
-    ...(employee.aliases || []),
-    employee.role,
-  ].map(String).map((item) => item.trim()).filter((item) => item.length >= 2))
+  return uniq([...(blueprint?.keywords || []), ...(employee.capabilities || []), ...(employee.aliases || []), employee.role]
+    .map(String).map((item) => item.trim()).filter((item) => item.length >= 2))
 }
 
 function explicitMention(task: string, employee: Employee): boolean {
   const value = normalized(task)
   const names = uniq([employee.name, ...(employee.aliases || [])].map(String).map((item) => item.trim()).filter(Boolean))
-  for (const name of names) {
-    const key = normalized(name)
-    if (key && value.includes(`@${key}`)) return true
-  }
+  for (const name of names) if (value.includes(`@${normalized(name)}`)) return true
   const name = normalized(employee.name)
   return !!name && name.length >= 2 && value.includes(name)
 }
@@ -158,56 +141,38 @@ function scoreEmployee(task: string, employee: Employee): WorkRoute {
   let score = explicit ? 1000 : 0
   const reasons: string[] = explicit ? ['明确点名'] : []
   const value = normalized(task)
-
   for (const rule of DOMAIN_RULES) {
     if (rule.id !== employee.id || !rule.match.test(task)) continue
     score += rule.weight
     reasons.push(rule.label)
   }
-
   for (const keyword of roleKeywords(employee)) {
     const key = normalized(keyword)
-    if (!key || key.length < 2 || !value.includes(key)) continue
+    if (!key || !value.includes(key)) continue
     score += Math.min(18, 6 + key.length)
     if (reasons.length < 4) reasons.push(`命中“${keyword}”`)
   }
-
-  // 秘书只有行政语义命中或被明确点名时参与竞争。
   if (employee.id === 'secretary' && !explicit && !reasons.length) score -= 100
-
   return { employeeId: employee.id, employeeName: employee.name, role: employee.role, score, reasons: uniq(reasons), explicit }
 }
 
-export function planWorkgroup(
-  task: string,
-  employees: readonly Employee[],
-  options: { maxTeam?: number; allowedEmployeeIds?: readonly string[] } = {},
-): WorkPlan {
+export function planWorkgroup(task: string, employees: readonly Employee[], options: { maxTeam?: number; allowedEmployeeIds?: readonly string[] } = {}): WorkPlan {
   const text = String(task || '').trim()
   if (!text) return { task: '', members: [], explicit: [], mode: 'solo' }
   const limit = Math.max(1, Math.min(MAX_WORKGROUP_SIZE, Math.floor(Number(options.maxTeam) || 3)))
   const allow = options.allowedEmployeeIds?.length ? new Set(options.allowedEmployeeIds.map(String)) : null
   const pool = employees.filter((employee) => !allow || allow.has(employee.id))
-  const ranked = pool.map((employee) => scoreEmployee(text, employee))
-    .sort((a, b) => b.score - a.score || a.employeeName.localeCompare(b.employeeName))
+  const ranked = pool.map((employee) => scoreEmployee(text, employee)).sort((a, b) => b.score - a.score || a.employeeName.localeCompare(b.employeeName))
   const explicit = ranked.filter((item) => item.explicit && item.score > 0)
   const picked: WorkRoute[] = explicit.slice(0, limit)
-
-  const add = (candidate?: WorkRoute) => {
-    if (!candidate || picked.length >= limit || picked.some((item) => item.employeeId === candidate.employeeId)) return
-    picked.push(candidate)
-  }
+  const add = (candidate?: WorkRoute) => { if (candidate && picked.length < limit && !picked.some((item) => item.employeeId === candidate.employeeId)) picked.push(candidate) }
 
   if (!picked.length) {
     const top = ranked.find((item) => item.score > 0)
     add(top)
     if (top) {
-      const second = ranked.find((item) => item.employeeId !== top.employeeId && item.score >= Math.max(18, top.score * .42))
-      if (second) add(second)
-      if (COMPLEX_TASK.test(text)) {
-        const third = ranked.find((item) => !picked.some((chosen) => chosen.employeeId === item.employeeId) && item.score >= Math.max(14, top.score * .28))
-        if (third) add(third)
-      }
+      add(ranked.find((item) => item.employeeId !== top.employeeId && item.score >= Math.max(18, top.score * .42)))
+      if (COMPLEX_TASK.test(text)) add(ranked.find((item) => !picked.some((chosen) => chosen.employeeId === item.employeeId) && item.score >= Math.max(14, top.score * .28)))
     }
   } else if (COMPLEX_TASK.test(text)) {
     for (const peer of ranked) {
@@ -219,86 +184,64 @@ export function planWorkgroup(
   }
 
   if (!picked.length) {
-    // 意图模糊时让产品岗位先澄清；秘书不承担通用兜底。
     add(ranked.find((item) => item.employeeId === 'pm') || ranked.find((item) => item.employeeId !== 'secretary') || ranked[0])
     if (picked[0]) picked[0] = { ...picked[0], reasons: uniq(['任务意图需要先澄清', ...picked[0].reasons]) }
   }
-
   return { task: text, members: picked, explicit: explicit.map((item) => item.employeeId), mode: picked.length > 1 ? 'team' : 'solo' }
 }
 
-/** 员工公开回复里明确 @ / 请 / 需要某同事时动态入场。 */
 export function requestedPeers(text: string, employees: readonly Employee[]): Employee[] {
   const value = String(text || '')
   const lower = normalized(value)
-  const out: Employee[] = []
-  for (const employee of employees) {
+  return employees.filter((employee) => {
     const names = uniq([employee.name, ...(employee.aliases || [])].map(String).map((item) => item.trim()).filter(Boolean))
-    let hit = false
-    for (const name of names) {
-      const key = normalized(name)
-      if (!key) continue
-      if (lower.includes(`@${key}`)) { hit = true; break }
-      if (name === employee.name && (value.includes(`需要${name}`) || value.includes(`请${name}`) || value.includes(`让${name}`) || value.includes(`交给${name}`))) { hit = true; break }
-    }
-    if (hit) out.push(employee)
-  }
-  return out
+    return names.some((name) => lower.includes(`@${normalized(name)}`)
+      || (name === employee.name && (value.includes(`需要${name}`) || value.includes(`请${name}`) || value.includes(`让${name}`) || value.includes(`交给${name}`))))
+  })
 }
 
 function attachmentText(attachments: readonly WorkAttachment[] = []): string {
   if (!attachments.length) return '（无附件）'
-  return attachments.map((item, index) => {
-    const locator = item.localPath || item.url || item.id || '无可读取地址'
-    return `${index + 1}. ${item.name || item.type || '附件'}${item.mime ? ` · ${item.mime}` : ''} · ${locator}`
-  }).join('\n')
+  return attachments.map((item, index) => `${index + 1}. ${item.name || item.type || '附件'}${item.mime ? ` · ${item.mime}` : ''} · ${item.localPath || item.url || item.id || '无可读取地址'}`).join('\n')
 }
 
-function rosterText(employees: readonly Employee[]): string {
-  return employees.map((item) => `${item.name}（${item.role}）`).join('、')
+function historyText(history: readonly WorkSessionTurn[], current: readonly WorkTurn[]): string {
+  const rows = [
+    ...history.filter((turn) => turn.reply && !turn.policyViolation).slice(-12).map((turn) => `${turn.employeeName}（${turn.role}）：${turn.reply}`),
+    ...current.filter((turn) => turn.reply && !turn.policyViolation).map((turn) => `${turn.staffName}（${turn.role}）：${turn.reply}`),
+  ]
+  return rows.length ? rows.join('\n\n') : '（这是这个工作组的第一条公开员工输出）'
 }
 
-function transcriptText(turns: readonly WorkTurn[]): string {
-  const visible = turns.filter((turn) => turn.reply.trim() && !turn.policyViolation)
-  if (!visible.length) return '（你是本工作组第一位公开发言人）'
-  return visible.map((turn) => `${turn.staffName}（${turn.role}）：${turn.reply}`).join('\n\n')
-}
+function rosterText(employees: readonly Employee[]): string { return employees.map((item) => `${item.name}（${item.role}）`).join('、') }
 
-function workPrompt(request: WorkRequest, employee: Employee, allEmployees: readonly Employee[], turns: readonly WorkTurn[], planned: readonly WorkRoute[]): string {
+function workPrompt(request: WorkRequest, employee: Employee, allEmployees: readonly Employee[], currentTurns: readonly WorkTurn[], history: readonly WorkSessionTurn[], planned: readonly WorkRoute[]): string {
   const team = planned.map((item) => `${item.employeeName}（${item.role}）`).join('、') || employee.name
-  const source = request.platform || request.source || 'web'
   return [
-    '[赛博公司动态工作组]',
-    `任务来源：${source}${request.senderName ? ` · ${request.senderName}` : ''}`,
-    `原始任务：${request.task}`,
-    `当前工作组：${team}`,
-    `你现在以“${employee.name} / ${employee.role}”身份加入同一个工作群。所有员工是平级同事；不存在主 Agent / 子 Agent 的产品等级。`,
+    '[赛博公司持久工作组]',
+    `任务来源：${request.platform || request.source || 'web'}${request.senderName ? ` · ${request.senderName}` : ''}`,
+    `老板 / 外部会话本轮原话：${request.task}`,
+    `本轮计划成员：${team}`,
+    `你以“${employee.name} / ${employee.role}”身份加入。所有员工是平级同事；不存在主 Agent / 子 Agent 的产品等级。`,
     request.permissionMode ? `当前渠道权限：${request.permissionMode}` : '',
-    request.writePolicy && !request.writePolicy.allowed ? '当前来源为只读权限：禁止执行任何写操作；做不到就明确说明。' : '',
-    '',
-    '附件：',
-    attachmentText(request.attachments),
-    '',
-    '前序同事真实公开输出：',
-    transcriptText(turns),
-    '',
-    '请从自己的岗位职责处理你该负责的部分。可以补充、质疑、接棒，并使用你真实可用的工具；不要把其他同事的话换个说法复述一遍。',
-    `确实需要另一位尚未入场的同事时，明确写“@姓名 + 需要他做什么”。可邀请员工：${rosterText(allEmployees)}。`,
-    '你的公开回复会直接进入同一个工作群 / 外部会话，不经过秘书转述。',
+    request.writePolicy && !request.writePolicy.allowed ? '当前来源为只读权限：禁止执行写操作；做不到就明确说明。' : '',
+    '', '附件：', attachmentText(request.attachments), '',
+    '这个工作组此前与本轮前序同事的真实公开输出：', historyText(history, currentTurns), '',
+    '处理你岗位范围内真正有增量的部分。可以补充、质疑、接棒并使用真实工具；不要复述同事已经说过的话。',
+    `确实需要尚未入场的同事时，明确写“@姓名 + 需要他做什么”。可邀请：${rosterText(allEmployees)}。`,
+    '你的回复会直接进入同一个工作群 / 外部会话，不经过秘书转述。',
   ].filter(Boolean).join('\n')
 }
 
-function marker(value: WorkResult): string {
-  return `[[NIUMA_MEETING state="done"]]\n${JSON.stringify(value)}`
-}
+function marker(value: WorkResult): string { return `[[NIUMA_MEETING state="done"]]\n${JSON.stringify(value)}` }
+function sessionIdOf(agent: any): string | undefined { return String(agent?.session?.id || agent?.id || '').trim() || undefined }
 
-export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: { events?: EventSink } = {}): WorkOrchestrator {
+export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: { events?: EventSink; sessionFile?: string } = {}): WorkOrchestrator {
   const tools = ctx?.tools
   const systemPrompt = ctx?.systemPrompt
   if (!tools || !systemPrompt) throw new Error('Work Orchestrator requires tools + systemPrompt')
-
-  const plan = (task: string, routeOptions?: { maxTeam?: number; allowedEmployeeIds?: readonly string[] }) =>
-    planWorkgroup(task, core.employees, routeOptions)
+  const sessions = new WorkSessionStore(options.sessionFile)
+  const plan = (task: string, routeOptions?: { maxTeam?: number; allowedEmployeeIds?: readonly string[] }) => planWorkgroup(task, core.employees, routeOptions)
 
   const run = async (request: WorkRequest): Promise<WorkResult> => {
     const task = String(request.task || '').trim()
@@ -308,9 +251,17 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
     const maxTeam = Math.max(1, Math.min(MAX_WORKGROUP_SIZE, Math.floor(Number(request.maxTeam) || 3)))
     const initial = plan(task, { maxTeam, allowedEmployeeIds: request.allowedEmployeeIds })
     if (!initial.members.length) throw new Error('当前权限范围内没有可路由的数字员工')
-
     if (request.agent) core.bindAgent(request.agent)
-    const teamId = `work-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
+
+    const conversationId = request.conversationId || (source === 'web' ? sessionIdOf(request.agent) : undefined) || request.channelId || 'workspace'
+    const sessionKey = request.sessionKey || `${platform}:${conversationId}:${request.threadId || 'main'}`
+    const session = await sessions.open({
+      key: sessionKey, goal: task, source, platform, channelId: request.channelId, conversationId,
+      threadId: request.threadId, senderId: request.senderId, senderName: request.senderName,
+      messageId: request.messageId, messageText: task,
+    })
+    const history = session.turns.slice(-12)
+    const runId = `run-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
     const queue = initial.members.map((item) => item.employeeId)
     const joined = new Set<string>()
     const planned = new Map(initial.members.map((item) => [item.employeeId, item]))
@@ -318,9 +269,7 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
     const allowed = request.allowedEmployeeIds?.length ? new Set(request.allowedEmployeeIds.map(String)) : null
     const publish = (event: CompanyEvent) => options.events?.publish(event, 'work-orchestrator')
 
-    if (queue.length > 1) {
-      publish({ id: `${teamId}:meeting:start`, type: 'meeting.started', at: Date.now(), meetingId: teamId, participants: queue.slice(), topic: `动态工作组：${clip(task, 80)}` })
-    }
+    if (queue.length > 1) publish({ id: `${runId}:meeting:start`, type: 'meeting.started', at: Date.now(), meetingId: runId, participants: queue.slice(), topic: `动态工作组：${clip(task, 80)}` })
 
     while (queue.length && joined.size < maxTeam) {
       const employeeId = queue.shift()!
@@ -328,20 +277,29 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
       const employee = core.employees.find((item) => item.id === employeeId)
       if (!employee || (allowed && !allowed.has(employee.id))) continue
       joined.add(employeeId)
+      const route = planned.get(employee.id)
+      await sessions.join(session.id, { employeeId: employee.id, employeeName: employee.name, role: employee.role, reason: route?.reasons.join(' · ') || '任务匹配' })
 
-      const prompt = workPrompt(request, employee, core.employees.filter((item) => !allowed || allowed.has(item.id)), turns, [...planned.values()])
+      const prompt = workPrompt(request, employee, core.employees.filter((item) => !allowed || allowed.has(item.id)), turns, history, [...planned.values()])
       const startedAt = Date.now()
-      publish({ id: `${teamId}:task:assigned:${employee.id}`, type: 'task.assigned', at: startedAt, employeeId: employee.id, taskId: `${teamId}:${employee.id}`, title: clip(task, 60), source, channelId: request.channelId || teamId })
-      publish({ id: `${teamId}:task:started:${employee.id}`, type: 'task.started', at: startedAt + 1, employeeId: employee.id, taskId: `${teamId}:${employee.id}`, title: clip(task, 60) })
+      publish({ id: `${runId}:task:assigned:${employee.id}`, type: 'task.assigned', at: startedAt, employeeId: employee.id, taskId: `${runId}:${employee.id}`, title: clip(task, 60), source, channelId: request.channelId || session.id })
+      publish({ id: `${runId}:task:started:${employee.id}`, type: 'task.started', at: startedAt + 1, employeeId: employee.id, taskId: `${runId}:${employee.id}`, title: clip(task, 60) })
 
       const policy = request.writePolicy
       const outcome = await core.dispatch({
         employeeId: employee.id,
         text: prompt,
+        taskTitle: task,
+        taskDescription: task,
         source,
-        channelId: request.channelId || teamId,
+        channelId: request.channelId || session.id,
         platform,
+        senderId: request.senderId,
         senderName: request.senderName || (source === 'web' ? '老板 / 公司工作群' : '外部会话'),
+        conversationId,
+        messageId: request.messageId,
+        threadId: request.threadId,
+        workgroupId: session.id,
         permissionMode: request.permissionMode,
         writeAllowed: policy ? policy.allowed : true,
         writeGate: policy ? { allowed: policy.allowed, isWriteTool: policy.isWriteTool } : undefined,
@@ -352,29 +310,18 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
       const toolsUsed = outcome.tools || []
       const policyViolation = !!policy && !policy.allowed && toolsUsed.some((tool) => policy.isWriteTool(tool))
       const reply = String(outcome.reply || '').trim()
-      const detail: WorkTurn = {
-        staffId: employee.id,
-        staffName: employee.name,
-        role: employee.role,
-        reply,
-        outcome: outcome.outcome,
-        taskId: outcome.taskId,
-        tools: toolsUsed,
-        error: outcome.error,
-        policyViolation,
-      }
+      const detail: WorkTurn = { staffId: employee.id, staffName: employee.name, role: employee.role, reply, outcome: outcome.outcome, taskId: outcome.taskId, tools: toolsUsed, error: outcome.error, policyViolation }
       turns.push(detail)
+      await sessions.appendTurn(session.id, { employeeId: employee.id, employeeName: employee.name, role: employee.role, reply, outcome: outcome.outcome, taskId: outcome.taskId, tools: toolsUsed, policyViolation })
 
       if (outcome.outcome === 'blocked' || policyViolation) {
-        publish({ id: `${teamId}:task:blocked:${employee.id}`, type: 'task.blocked', at: Date.now(), employeeId: employee.id, taskId: `${teamId}:${employee.id}`, reason: policyViolation ? `只读来源观测到写工具：${toolsUsed.filter((tool) => policy?.isWriteTool(tool)).join('、')}` : (outcome.error || '员工本轮被阻塞') })
+        publish({ id: `${runId}:task:blocked:${employee.id}`, type: 'task.blocked', at: Date.now(), employeeId: employee.id, taskId: `${runId}:${employee.id}`, reason: policyViolation ? `只读来源观测到写工具：${toolsUsed.filter((tool) => policy?.isWriteTool(tool)).join('、')}` : (outcome.error || '员工本轮被阻塞') })
       } else {
-        publish({ id: `${teamId}:task:completed:${employee.id}`, type: 'task.completed', at: Date.now(), employeeId: employee.id, taskId: `${teamId}:${employee.id}`, outcome: outcome.outcome, summary: reply ? clip(reply, 180) : outcome.error })
+        publish({ id: `${runId}:task:completed:${employee.id}`, type: 'task.completed', at: Date.now(), employeeId: employee.id, taskId: `${runId}:${employee.id}`, outcome: outcome.outcome, summary: reply ? clip(reply, 180) : outcome.error })
       }
 
-      // 只有真实可公开回复才允许继续拉人；被安全策略拦下的文本不能成为协作上下文。
       if (reply && !policyViolation && joined.size < maxTeam) {
-        const peers = requestedPeers(reply, core.employees)
-        for (const peer of peers) {
+        for (const peer of requestedPeers(reply, core.employees)) {
           if ((allowed && !allowed.has(peer.id)) || joined.has(peer.id) || queue.includes(peer.id)) continue
           const peerRoute = scoreEmployee(`${task}\n${reply}`, peer)
           planned.set(peer.id, { ...peerRoute, reasons: uniq(['同事在工作群中明确邀请', ...peerRoute.reasons]), score: Math.max(peerRoute.score, 500) })
@@ -385,24 +332,16 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
     }
 
     const participantIds = [...joined]
-    if (participantIds.length > 1) {
-      publish({ id: `${teamId}:meeting:finish`, type: 'meeting.finished', at: Date.now(), meetingId: teamId, participants: participantIds, summary: '动态工作组本轮协作完成' })
-    }
-
-    const participants = participantIds.map((staffId) => {
-      const employee = core.employees.find((item) => item.id === staffId)!
-      const route = planned.get(staffId)
-      return { staffId, staffName: employee.name, role: employee.role, reason: route?.reasons.join(' · ') || '任务匹配' }
-    })
+    if (participantIds.length > 1) publish({ id: `${runId}:meeting:finish`, type: 'meeting.finished', at: Date.now(), meetingId: runId, participants: participantIds, summary: '动态工作组本轮协作完成' })
+    await sessions.setStatus(session.id, turns.some((item) => item.outcome === 'blocked' || item.policyViolation) ? 'blocked' : 'active')
 
     return {
-      kind: 'meeting',
-      topic: `动态工作组 · ${clip(task, 72)}`,
-      task,
-      teamId,
-      source,
-      platform,
-      participants,
+      kind: 'meeting', topic: `动态工作组 · ${clip(task, 72)}`, task, teamId: session.id, source, platform,
+      participants: participantIds.map((staffId) => {
+        const employee = core.employees.find((item) => item.id === staffId)!
+        const route = planned.get(staffId)
+        return { staffId, staffName: employee.name, role: employee.role, reason: route?.reasons.join(' · ') || '任务匹配' }
+      }),
       turns: turns.filter((turn) => turn.reply && !turn.policyViolation).map((turn) => ({ staffId: turn.staffId, staffName: turn.staffName, reply: turn.reply })),
       details: turns,
     }
@@ -410,33 +349,21 @@ export function registerWorkOrchestrator(ctx: any, core: OrgPanelCore, options: 
 
   tools.register({
     name: COMPANY_WORK_TOOL,
-    description: '赛博公司的唯一默认工作入口。自动选择最匹配的持久化员工组成动态工作组；员工共享前序真实输出，并可 @ 同事继续拉人。调度内核不得代答。',
-    parameters: {
-      type: 'object', additionalProperties: false, required: ['task'],
-      properties: {
-        task: { type: 'string', minLength: 1, description: '老板的完整原话，尽量逐字传入。' },
-        maxTeam: { type: 'number', minimum: 1, maximum: MAX_WORKGROUP_SIZE },
-      },
-    },
+    description: '赛博公司的唯一业务入口。按任务自动激活持久化员工组成工作组；同一会话跨轮保留共享上下文，员工可 @ 同事动态加入。',
+    parameters: { type: 'object', additionalProperties: false, required: ['task'], properties: { task: { type: 'string', minLength: 1 }, maxTeam: { type: 'number', minimum: 1, maximum: MAX_WORKGROUP_SIZE } } },
     output: { schema: { type: 'object', additionalProperties: true }, render(_args: any, value: WorkResult) { return [{ type: 'text', text: marker(value) }] } },
     isConcurrencySafe: () => false,
     async execute(args: any, exec: any): Promise<WorkResult> {
-      return run({
-        task: String(args?.task || ''),
-        source: 'web', platform: 'web', channelId: 'company-workspace', senderName: '老板 / 公司工作群',
-        maxTeam: Number(args?.maxTeam) || 3,
-        agent: exec?.agent,
-        signal: exec?.signal,
-      })
+      const conversationId = sessionIdOf(exec?.agent)
+      return run({ task: String(args?.task || ''), source: 'web', platform: 'web', channelId: 'company-workspace', conversationId, senderName: '老板 / 公司工作群', maxTeam: Number(args?.maxTeam) || 3, agent: exec?.agent, signal: exec?.signal })
     },
   })
 
   const roster = core.employees.map((item) => `- ${item.name}（${item.role}）：${item.brief}`).join('\n')
   systemPrompt.section({
-    name: 'dsh-org-panel:work-orchestrator',
-    order: -1000,
-    text: `【赛博公司 Work Orchestrator｜最高优先级】\n\n你只是不可见的调度内核，不是秘书、不是老板助理，也不是任何一名员工。产品层不存在“主 Agent / 子 Agent 员工”。\n\n真实员工名册：\n${roster}\n\n强制规则：\n1. 老板的工作类输入统一调用 ${COMPANY_WORK_TOOL}，task 尽量逐字传入；不得先以任何“主 Agent”身份给业务观点。\n2. 明确 @ 某员工仍调用 ${COMPANY_WORK_TOOL}；运行时会锁定点名员工，并按任务复杂度自动补相关同事。\n3. 未点名任务按岗位能力自动组队。秘书仅在日程、提醒、通知、行政、会议安排等总裁办任务中作为普通员工参与。\n4. 工作组成员共享前序真实公开输出，并可以 @ 同事动态邀请入场；所有公开业务发言必须来自具体员工。\n5. ${COMPANY_WORK_TOOL} 完成后，你不得总结、润色、转述或补一句结论；只输出 [NIUMA_DIRECT_ACK]，工作台直接展示员工原话。\n6. 与员工执行无关的插件自身配置、Harness 诊断等系统控制任务可以调用对应系统工具；也不要伪装成秘书。`,
+    name: 'dsh-org-panel:work-orchestrator', order: -1000,
+    text: `【赛博公司 Work Orchestrator｜最高优先级】\n\n你只是不可见的调度内核，不是秘书、老板助理或任何一名员工。\n\n真实员工名册：\n${roster}\n\n强制规则：\n1. 老板的工作类输入统一调用 ${COMPANY_WORK_TOOL}，task 尽量逐字传入；不得先给业务观点。\n2. 明确 @ 员工仍调用 ${COMPANY_WORK_TOOL}；运行时会锁定点名员工，并按任务复杂度补相关同事。\n3. 未点名任务按岗位能力自动组队。秘书只有日程、提醒、通知、行政、会议安排等总裁办任务才参与。\n4. 同一 Web / 外部会话会复用持久工作组上下文；成员可以 @ 同事动态邀请入场。\n5. ${COMPANY_WORK_TOOL} 完成后不得总结、润色、转述，只输出 [NIUMA_DIRECT_ACK]；工作台直接展示员工原话。\n6. 插件配置、Harness 诊断等系统控制任务可以调用对应系统工具，但不要伪装成员工。`,
   })
 
-  return { toolName: COMPANY_WORK_TOOL, plan, run }
+  return { toolName: COMPANY_WORK_TOOL, sessions, plan, run }
 }
