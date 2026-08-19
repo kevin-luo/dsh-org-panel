@@ -1,5 +1,5 @@
-// 外部通讯 Work Router：只负责“安全边界 + 会话串行 + 回信”。
-// 员工选择、多人组队、动态 @ 入场全部属于 Work Orchestrator。
+// 外部通讯 Work Router：只负责 transport 安全边界、会话串行与回信。
+// 员工选择、多人组队、共享上下文、动态 @ 入场全部交给 Work Orchestrator。
 import type { WorkRequest, WorkResult } from '../../collaboration/work-orchestrator'
 import { IMGateway } from './gateway'
 import {
@@ -9,7 +9,6 @@ import {
 } from './types'
 
 const TIMELINE_LIMIT = 200
-
 export type WorkDispatcher = (request: WorkRequest) => Promise<WorkResult>
 
 type WorkRouterDeps = {
@@ -45,7 +44,7 @@ export class WorkRouter {
     return this.bindings.find((item) => item.adapterId === adapterId && item.externalConversationId === conversationId)?.companyChannelId
   }
 
-  /** 同一外部会话严格串行，并返回真实 Promise。 */
+  /** 同一外部会话严格串行，直到真实员工执行和回信全部结束。 */
   handle(message: ExternalMessage): Promise<void> {
     const key = `${message.adapterId}:${message.conversationId}`
     const previous = this.queues.get(key) || Promise.resolve()
@@ -64,8 +63,9 @@ export class WorkRouter {
 
   private normalizedTask(message: ExternalMessage): string {
     const text = String(message.text || '').trim()
-    const mentionText = (message.mentions || []).map((item) => String(item).trim()).filter(Boolean).map((item) => item.startsWith('@') ? item : `@${item}`).join(' ')
-    if (text) return mentionText && !message.mentions.some((item) => text.includes(String(item))) ? `${mentionText}\n${text}` : text
+    const mentions = (message.mentions || []).map((item) => String(item).trim()).filter(Boolean).map((item) => item.startsWith('@') ? item : `@${item}`)
+    const missingMentions = mentions.filter((mention) => !text.includes(mention) && !text.includes(mention.slice(1)))
+    if (text) return missingMentions.length ? `${missingMentions.join(' ')}\n${text}` : text
     if (message.attachments.length) return `请处理这条消息附带的 ${message.attachments.length} 个附件。`
     return ''
   }
@@ -92,9 +92,7 @@ export class WorkRouter {
         this.warnedMissingRuntime = true
         this.deps.logger?.warn?.('dsh-org-panel: Work Orchestrator 未接线，外部消息已记录但无法执行')
       }
-      if (config?.routing.notifyUndeliverable !== false) {
-        await this.reply(message, companyChannelId, { kind: 'system', text: '赛博公司当前没有可用的工作调度运行时，这条消息已记录但还不能执行。' })
-      }
+      if (config?.routing.notifyUndeliverable !== false) await this.reply(message, companyChannelId, { kind: 'system', text: '赛博公司当前没有可用的工作调度运行时，这条消息已记录但还不能执行。' })
       return
     }
 
@@ -106,6 +104,10 @@ export class WorkRouter {
         source: taskSourceOf(message.platform),
         platform: message.platform,
         channelId: companyChannelId || message.conversationId,
+        conversationId: message.conversationId,
+        messageId: message.id,
+        threadId: message.threadId,
+        senderId: message.senderId,
         senderName: message.senderName || message.senderId,
         permissionMode: message.permissionMode,
         attachments: message.attachments,
@@ -124,26 +126,18 @@ export class WorkRouter {
     for (const turn of result.details) {
       if (turn.policyViolation) {
         const writes = turn.tools.filter((tool) => gate.isWriteTool(tool))
-        this.deps.events?.emit({
-          type: 'external.write.denied', at: Date.now(), platform: message.platform, adapterId: message.adapterId,
-          conversationId: message.conversationId, employeeId: turn.staffId, tools: writes, blocked: false,
-        })
+        this.deps.events?.emit({ type: 'external.write.denied', at: Date.now(), platform: message.platform, adapterId: message.adapterId, conversationId: message.conversationId, employeeId: turn.staffId, tools: writes, blocked: false })
         await this.reply(message, companyChannelId, { kind: 'notice', text: `这条消息来自只读渠道，${turn.staffName} 本轮观测到写操作（${writes.join('、') || '未知写工具'}），该员工回复已被拦下。` })
         continue
       }
       if (!turn.reply.trim()) continue
       visibleReplies += 1
-      await this.reply(message, companyChannelId, {
-        kind: 'employee-reply', text: turn.reply,
-        employeeId: turn.staffId, employeeName: turn.staffName, employeeRole: turn.role,
-      })
+      await this.reply(message, companyChannelId, { kind: 'employee-reply', text: turn.reply, employeeId: turn.staffId, employeeName: turn.staffName, employeeRole: turn.role })
     }
 
     if (!visibleReplies && result.details.length && config?.routing.notifyUndeliverable !== false) {
       const blocked = result.details.filter((item) => item.outcome === 'blocked' || item.error)
-      if (blocked.length) {
-        await this.reply(message, companyChannelId, { kind: 'notice', text: `工作组本轮没有可公开的交付：${blocked.map((item) => `${item.staffName}${item.error ? `：${item.error}` : '被阻塞'}`).join('；')}` })
-      }
+      if (blocked.length) await this.reply(message, companyChannelId, { kind: 'notice', text: `工作组本轮没有可公开的交付：${blocked.map((item) => `${item.staffName}${item.error ? `：${item.error}` : '被阻塞'}`).join('；')}` })
     }
   }
 
@@ -158,10 +152,7 @@ export class WorkRouter {
       attachments: payload.attachments?.length || 0, permissionMode: message.permissionMode,
     })
     if (!sent) return
-    this.deps.events?.emit({
-      type: 'external.message.sent', at, platform: message.platform, adapterId: message.adapterId, conversationId: message.conversationId,
-      companyChannelId, employeeId: payload.employeeId, employeeName: payload.employeeName, text: payload.text, kind: payload.kind || 'notice',
-    })
+    this.deps.events?.emit({ type: 'external.message.sent', at, platform: message.platform, adapterId: message.adapterId, conversationId: message.conversationId, companyChannelId, employeeId: payload.employeeId, employeeName: payload.employeeName, text: payload.text, kind: payload.kind || 'notice' })
   }
 
   private pushTimeline(entry: TimelineEntry): void {
