@@ -22,7 +22,7 @@ async function fixture(name) {
   return { store, company, endpoints: writeEndpoints({ core }) }
 }
 
-test('Model Control Plane: 新增/编辑会持久化，编辑缺失字段保持原值', async () => {
+test('Model Control Plane: 新增/编辑会持久化，编辑 undefined 字段保持原值', async () => {
   const { company, endpoints } = await fixture('model-control-upsert')
   const upsert = endpoints['models/upsert']
 
@@ -31,16 +31,18 @@ test('Model Control Plane: 新增/编辑会持久化，编辑缺失字段保持�
     baseUrl: 'https://example.invalid/v1', apiKeyRef: 'env:MODEL_KEY', timeout: 12345, enabled: true,
   } })
 
-  // 模拟浏览器编辑表单：安全摘要没有 timeout，所以这里只提交它真实知道的字段。
+  // 模拟浏览器编辑表单的真实 payload：安全摘要没有 timeout，所以属性会以 undefined 出现。
+  // undefined 必须表示“本次没改”，不能覆盖掉 company.json 里的旧值。
   await upsert({ provider: {
-    id: 'text-main', type: 'text', provider: 'openai-compatible', model: 'model-v2', enabled: true,
+    id: 'text-main', type: 'text', provider: 'openai-compatible', model: 'model-v2',
+    baseUrl: 'https://example.invalid/v1', apiKeyRef: 'env:MODEL_KEY', timeout: undefined, enabled: true,
   } })
 
   const row = (await company.modelProviders('text'))[0]
   assert.equal(row.model, 'model-v2')
-  assert.equal(row.baseUrl, 'https://example.invalid/v1', '未提交的 baseUrl 应保持原值')
-  assert.equal(row.apiKeyRef, 'env:MODEL_KEY', '未提交的 SecretRef 应保持原值')
-  assert.equal(row.timeout, 12345, '未提交的 timeout 应保持原值')
+  assert.equal(row.baseUrl, 'https://example.invalid/v1')
+  assert.equal(row.apiKeyRef, 'env:MODEL_KEY')
+  assert.equal(row.timeout, 12345, 'UI 未下发的 timeout 应保持原值')
 })
 
 test('Model Control Plane: 设为默认会改变同类型 fallback 顺序', async () => {
