@@ -177,6 +177,25 @@ export class CompanyStore {
     })
   }
 
+  /**
+   * 把某个供应商移动到同能力类型的兜底链首位。
+   * Model Gateway 对 company.modelProviders(type) 的返回顺序有真实语义：员工没有显式绑定时，
+   * 第一个已启用且协议可用的供应商就是公司默认。因此“设为默认”必须落到持久化顺序，
+   * 不能只在前端打一个 isDefault 标签。
+   */
+  async setDefaultModelProvider(providerId: string): Promise<ModelProviderConfig> {
+    return this.mutate(() => {
+      const index = this.state.modelProviders.findIndex((item) => item.id === providerId)
+      if (index < 0) throw new Error(`unknown model provider: ${providerId}`)
+      const provider = this.state.modelProviders[index]
+      this.state.modelProviders.splice(index, 1)
+      const firstSameType = this.state.modelProviders.findIndex((item) => item.type === provider.type)
+      this.state.modelProviders.splice(firstSameType >= 0 ? firstSameType : this.state.modelProviders.length, 0, provider)
+      this.state.updatedAt = now()
+      return clone(provider)
+    })
+  }
+
   async modelProviders(type?: ModelProviderType): Promise<ModelProviderConfig[]> {
     await this.ensureLoaded()
     return clone(this.state.modelProviders.filter((item) => !type || item.type === type))
