@@ -1,7 +1,5 @@
 // 外部通讯 Work Router：只负责“安全边界 + 会话串行 + 回信”。
-//
-// 员工选择、多人组队、动态 @ 入场全部属于 Work Orchestrator，不能再在 IM 层另写一套。
-// 因此这里没有“默认秘书 / 默认负责人 / 员工互相转交”的星型路由。
+// 员工选择、多人组队、动态 @ 入场全部属于 Work Orchestrator。
 import type { WorkRequest, WorkResult } from '../../collaboration/work-orchestrator'
 import { IMGateway } from './gateway'
 import {
@@ -37,35 +35,17 @@ export class WorkRouter {
     this.dispatcher = deps.dispatcher || null
   }
 
-  setDispatcher(dispatcher: WorkDispatcher | null): void {
-    this.dispatcher = dispatcher
-  }
-
-  setRoster(roster: RosterEntry[]): void {
-    this.roster = roster
-  }
-
-  setBindings(bindings: ChannelBinding[]): void {
-    this.bindings = bindings
-  }
-
-  hasDispatcher(): boolean {
-    return !!this.dispatcher
-  }
-
-  timeline(limit = 50): TimelineEntry[] {
-    return this.timelineEntries.slice(-Math.max(1, Math.min(TIMELINE_LIMIT, limit)))
-  }
-
-  employeeById(employeeId: string): RosterEntry | undefined {
-    return this.roster.find((item) => item.id === employeeId)
-  }
-
+  setDispatcher(dispatcher: WorkDispatcher | null): void { this.dispatcher = dispatcher }
+  setRoster(roster: RosterEntry[]): void { this.roster = roster }
+  setBindings(bindings: ChannelBinding[]): void { this.bindings = bindings }
+  hasDispatcher(): boolean { return !!this.dispatcher }
+  timeline(limit = 50): TimelineEntry[] { return this.timelineEntries.slice(-Math.max(1, Math.min(TIMELINE_LIMIT, limit))) }
+  employeeById(employeeId: string): RosterEntry | undefined { return this.roster.find((item) => item.id === employeeId) }
   channelIdFor(adapterId: string, conversationId: string): string | undefined {
     return this.bindings.find((item) => item.adapterId === adapterId && item.externalConversationId === conversationId)?.companyChannelId
   }
 
-  /** 同一外部会话严格串行；返回真实 Promise，让 Adapter 可以等待整条工作组执行与回信完成。 */
+  /** 同一外部会话严格串行，并返回真实 Promise。 */
   handle(message: ExternalMessage): Promise<void> {
     const key = `${message.adapterId}:${message.conversationId}`
     const previous = this.queues.get(key) || Promise.resolve()
@@ -79,8 +59,7 @@ export class WorkRouter {
 
   private allowedEmployees(message: ExternalMessage): string[] | undefined {
     const config = this.deps.gateway.configOf(message.adapterId)
-    const rule = config?.access.conversations.find((item) => item.conversationId === message.conversationId)
-    return rule?.allowedEmployees
+    return config?.access.conversations.find((item) => item.conversationId === message.conversationId)?.allowedEmployees
   }
 
   private normalizedTask(message: ExternalMessage): string {
@@ -131,15 +110,13 @@ export class WorkRouter {
         permissionMode: message.permissionMode,
         attachments: message.attachments,
         allowedEmployeeIds: this.allowedEmployees(message),
-        maxTeam: 4,
+        maxTeam: config?.routing.maxWorkgroupSize,
         writePolicy: { allowed: gate.allowed, isWriteTool: gate.isWriteTool },
       })
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error)
       this.deps.logger?.warn?.(`dsh-org-panel: 外部工作组启动失败：${detail}`)
-      if (config?.routing.notifyUndeliverable !== false) {
-        await this.reply(message, companyChannelId, { kind: 'notice', text: `这次任务没能启动：${detail}` })
-      }
+      if (config?.routing.notifyUndeliverable !== false) await this.reply(message, companyChannelId, { kind: 'notice', text: `这次任务没能启动：${detail}` })
       return
     }
 
@@ -151,10 +128,7 @@ export class WorkRouter {
           type: 'external.write.denied', at: Date.now(), platform: message.platform, adapterId: message.adapterId,
           conversationId: message.conversationId, employeeId: turn.staffId, tools: writes, blocked: false,
         })
-        await this.reply(message, companyChannelId, {
-          kind: 'notice',
-          text: `这条消息来自只读渠道，${turn.staffName} 本轮观测到写操作（${writes.join('、') || '未知写工具'}），该员工回复已被拦下。`,
-        })
+        await this.reply(message, companyChannelId, { kind: 'notice', text: `这条消息来自只读渠道，${turn.staffName} 本轮观测到写操作（${writes.join('、') || '未知写工具'}），该员工回复已被拦下。` })
         continue
       }
       if (!turn.reply.trim()) continue
@@ -168,10 +142,7 @@ export class WorkRouter {
     if (!visibleReplies && result.details.length && config?.routing.notifyUndeliverable !== false) {
       const blocked = result.details.filter((item) => item.outcome === 'blocked' || item.error)
       if (blocked.length) {
-        await this.reply(message, companyChannelId, {
-          kind: 'notice',
-          text: `工作组本轮没有可公开的交付：${blocked.map((item) => `${item.staffName}${item.error ? `：${item.error}` : '被阻塞'}`).join('；')}`,
-        })
+        await this.reply(message, companyChannelId, { kind: 'notice', text: `工作组本轮没有可公开的交付：${blocked.map((item) => `${item.staffName}${item.error ? `：${item.error}` : '被阻塞'}`).join('；')}` })
       }
     }
   }
