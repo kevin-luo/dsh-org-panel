@@ -1,5 +1,7 @@
 import { createElement as h, useEffect, useMemo, useRef } from 'react'
 import type { Channel, CompanyMessage, StaffDef } from '../types'
+import type { WorkgroupFeed } from '../work-sessions'
+import { workgroupPlatformLabel } from '../work-sessions'
 import { staffThumb } from '../asset-map'
 import { channelMatchesNode, clip, formatClock, staffOf } from '../selectors'
 import { AssetImage } from './AssetImage'
@@ -7,6 +9,15 @@ import { ChatMessage } from './ChatMessage'
 
 const MIN_HEIGHT = 240
 const MAX_HEIGHT = 420
+
+function relativeWorkTime(value: number): string {
+  const delta = Date.now() - Number(value || 0)
+  if (!Number.isFinite(delta) || delta < 0) return '刚刚'
+  if (delta < 60_000) return '刚刚'
+  if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前`
+  if (delta < 86_400_000) return `${Math.max(1, Math.floor(delta / 3_600_000))} 小时前`
+  return `${Math.max(1, Math.floor(delta / 86_400_000))} 天前`
+}
 
 export function CollaborationPanel(props: {
   channels: Channel[]
@@ -18,6 +29,7 @@ export function CollaborationPanel(props: {
   typingStaff: StaffDef | null
   running: boolean
   promptError: any
+  workgroups: WorkgroupFeed
   activeStaffId: string | null
   onClearStaffFilter: () => void
   collapsed: boolean
@@ -28,9 +40,9 @@ export function CollaborationPanel(props: {
   onOpenThread: (message: CompanyMessage) => void
   onCloseThread: () => void
 }) {
-  // 工作群只负责「看」：频道 / 消息流 / 临时工作组 / Tool Trace / thread / typing。
+  // 工作群只负责「看」：频道 / 消息流 / 持久工作组 / Tool Trace / thread / typing。
   // 「写」全部交给 DSH 原生 Composer（本面板下方的 [data-composer-seat]），这里没有任何自制输入控件。
-  const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError,
+  const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError, workgroups,
     activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight,
     thread, onOpenThread, onCloseThread } = props
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -59,6 +71,7 @@ export function CollaborationPanel(props: {
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
   const channel = channels.find((item) => item.id === channelId)
+  const recentWorkgroups = !activeStaffId && visible.length === 0 && workgroups.available ? workgroups.sessions.slice(0, 3) : []
 
   return h('section', { className: `cy9-collab${collapsed ? ' collapsed' : ''}`, style: { height: collapsed ? 40 : height } },
     h('div', { className: 'cy9-collab-grip', onMouseDown: onGripDown }),
@@ -79,14 +92,30 @@ export function CollaborationPanel(props: {
         h('div', { className: 'cy9-chat-body', ref: bodyRef, role: 'log', 'aria-live': 'polite', onScroll: (event: any) => {
           const el = event.currentTarget as HTMLDivElement; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         } },
-          visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。直接在下方输入任务，系统会按任务内容自动拉合适的员工进工作组；输入 @姓名 可以锁定指定员工。') : null,
+          recentWorkgroups.length ? h('div', { className: 'cy9-workgroups' },
+            h('div', { className: 'cy9-workgroups-head' },
+              h('b', null, '持续工作组'),
+              h('span', null, '来自 host 持久档案 · 刷新页面也不会消失'),
+            ),
+            recentWorkgroups.map((group) => h('div', { key: group.id, className: `cy9-workgroup ${group.status}` },
+              h('div', { className: 'cy9-workgroup-top' },
+                h('span', { className: 'cy9-workgroup-source' }, workgroupPlatformLabel(group.origin?.platform || group.origin?.source)),
+                h('b', null, clip(group.goal, 54)),
+                h('time', null, relativeWorkTime(group.updatedAt)),
+              ),
+              h('div', { className: 'cy9-workgroup-team' },
+                (group.participants || []).slice(0, 5).map((member) => h('span', { key: member.employeeId }, member.employeeName)),
+                h('em', null, `${group.turnCount || 0} 次员工交付 · ${group.messageCount || 0} 轮消息`),
+              ),
+              group.lastTurn?.reply ? h('p', null, `${group.lastTurn.employeeName || '员工'}：${clip(group.lastTurn.reply, 100)}`) : null,
+            )),
+          ) : visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。直接在下方输入任务，系统会按任务内容自动拉合适的员工进工作组；输入 @姓名 可以锁定指定员工。') : null,
           visible.map((message) => h(ChatMessage, { key: message.id, message, staff, onOpenThread })),
           (runningCalls || []).map((call: any) => h('div', { key: call.callId, className: 'cy9-msg-tool running' },
             h('span', { className: 'cy9-msg-tool-icon' }, 'RUN'), h('span', { className: 'cy9-msg-tool-main' }, h('b', null, String(call.name || 'tool')), h('span', null, '正在执行真实工具…')),
           )),
           typingStaff ? h('div', { className: 'cy9-msg-typing' }, h(AssetImage, { src: staffThumb(typingStaff.id), alt: typingStaff.name, fallback: typingStaff.name }), `${typingStaff.name} 正在输入`, h('span', null, h('i'), h('i'), h('i'))) : running ? h('div', { className: 'cy9-msg-typing' }, '正在根据任务组队并推进工作', h('span', null, h('i'), h('i'), h('i'))) : null,
         ),
-        // 输入位说明：真正的输入框是下方 DSH 原生 Composer，这里只做一行只读指引。
         h('div', { className: 'cy9-chat-hint' }, `直接发任务会自动组队 · 输入 @ 可锁定员工${channel ? ` · 当前 # ${channel.name}` : ''}`),
       ),
       thread ? h('aside', { className: 'cy9-thread' },
