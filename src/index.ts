@@ -1,8 +1,12 @@
 // 「赛博公司」host 入口。
-// v3：在 v2 真实员工体系之上接入自我进化、真实 DSH 社区插件市场、多模型网关、
+// v3：在 v2 真实员工体系之上接入任务自动组队、自我进化、真实 DSH 社区插件市场、多模型网关、
 // 插件运行时（申请→人类审批→真实安装→验证）与外部通讯渠道。
 export { inject, apply, type OrgPanelHost, type OrgPanelHostFields } from './host-v3'
 export type { OrgPanelCore } from './host-v2'
+
+// Task Team Runtime：root 只做不可见调度，任务按内容自动激活真实员工；员工可以 @ 同事动态加入同一工作组。
+export { COMPANY_WORK_TOOL, planTaskTeam, requestedPeers, registerTeamRuntime } from './collaboration/team-runtime'
+export type { TeamPlan, TeamRoute, TeamRuntimeHandle, TeamTurn, TeamWorkResult } from './collaboration/team-runtime'
 
 // /org-panel RPC 频道：设置中心直接读真实台账的那条管子。
 // 频道名与端点表导出来，是为了让前端与回归测试用同一份常量，而不是两边各写一个字符串。
@@ -23,7 +27,7 @@ export type {
   LearnedSkill, ModelBinding, ModelProviderConfig, PluginBinding, SkillEvidence, TaskHistory,
 } from './persistence/types'
 
-// 运行时事件总线：host 侧生产者（插件运行时 / 通讯层）与前端消费同一套事件契约。
+// 运行时事件总线：host 侧生产者（任务工作组 / 插件运行时 / 通讯层）与前端消费同一套事件契约。
 export { CompanyEventBus, companyEventBus, SESSION_CHANNEL } from './runtime/event-bus'
 export { reduceCompanyRuntime, emptyCompanyRuntime } from './runtime/company-events'
 export type { CompanyEvent, CompanyRuntime, EmployeeRuntimeState } from './runtime/company-events'
