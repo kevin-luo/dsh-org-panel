@@ -209,11 +209,7 @@ export type AdapterStatus = {
   sentCount: number
 }
 
-/**
- * Adapter → Gateway 的消息回调允许返回 Promise。
- * 这样一条外部消息的生命周期可以被真正等待到 Router / 员工处理完毕；
- * 旧实现把 handler 写死成 void，Gateway 调完就丢，测试和宿主只能靠 sleep 猜处理是否结束。
- */
+/** Adapter → Gateway 的消息回调允许返回 Promise，便于完整等待 Router / 员工处理生命周期。 */
 export type IMMessageHandler = (message: ExternalMessage) => void | Promise<void>
 
 export interface IMAdapter {
@@ -227,9 +223,55 @@ export interface IMAdapter {
   status(): AdapterStatus
 }
 
+/** Adapter 运行期依赖，由 Manager 注入；logger 里不允许出现任何密钥。 */
+export type AdapterRuntime = {
+  logger?: { info?: (message: string) => void; warn?: (message: string) => void; error?: (message: string) => void }
+  /** 把 SecretRef 解析成真实值；解析结果只留在 Adapter 实例内存里。 */
+  resolveSecret: (ref: SecretRef) => Promise<string | undefined>
+  /** 附件落地目录，Adapter 自行按需创建。 */
+  attachmentDir: string
+}
+
 // ---------------------------------------------------------------------------
-// 下方其余通讯配置 / Router 契约保持原样
+// 通讯配置（需求文档二十三 / 二十五 / 三十）
 // ---------------------------------------------------------------------------
+
+/** 允许用户规则（需求文档三十）。 */
+export type ExternalActorRule = {
+  userId: string
+  name?: string
+  role: ActorRole
+  permissionMode: ExternalPermissionMode
+}
+
+/** 允许群规则（需求文档三十）。 */
+export type ExternalConversationRule = {
+  conversationId: string
+  name?: string
+  permissionMode: ExternalPermissionMode
+  /** 该群允许直达的员工；留空表示不限制（仍受全局路由约束）。 */
+  allowedEmployees?: string[]
+}
+
+export type AccessPolicy = {
+  /** 命中规则但没写档位时的兜底，默认 read-only。 */
+  defaultPermissionMode: ExternalPermissionMode
+  /** 是否接收名单外用户的消息，默认 false。 */
+  allowUnknownUsers: boolean
+  /** 是否接收名单外群的消息，默认 false。 */
+  allowUnknownConversations: boolean
+  actors: ExternalActorRule[]
+  conversations: ExternalConversationRule[]
+}
+
+export type AdapterRouting = {
+  defaultTarget: 'secretary' | 'auto' | string
+  recognizeMentions: boolean
+  allowEmployeeCollaboration: boolean
+  maxHops: number
+  /** 无法投递（没有员工运行时/命中限制）时，是否回一条事实说明。默认 true。 */
+  notifyUndeliverable: boolean
+}
 
 export type AdapterCapabilities = {
   text: boolean
@@ -237,39 +279,6 @@ export type AdapterCapabilities = {
   file: boolean
   audio: boolean
   video: boolean
-  thread: boolean
-  reaction: boolean
-}
-
-export type CredentialMap = Record<string, SecretRef>
-
-export type ActorAccessRule = {
-  userId: string
-  name?: string
-  role: ActorRole
-  permissionMode: ExternalPermissionMode
-}
-
-export type ConversationAccessRule = {
-  conversationId: string
-  name?: string
-  permissionMode: ExternalPermissionMode
-  allowedEmployees?: string[]
-}
-
-export type AccessPolicy = {
-  allowUnknownUsers: boolean
-  allowUnknownConversations: boolean
-  defaultPermissionMode: ExternalPermissionMode
-  actors: ActorAccessRule[]
-  conversations: ConversationAccessRule[]
-}
-
-export type AdapterRoutingConfig = {
-  defaultTarget: string
-  recognizeMentions: boolean
-  allowEmployeeHandoff: boolean
-  maxHops: number
 }
 
 export type CommunicationAdapterConfig = {
@@ -277,18 +286,23 @@ export type CommunicationAdapterConfig = {
   platform: IMPlatform
   name: string
   enabled: boolean
-  connectionMode: string
-  credentials: CredentialMap
+  /** feishu: 'long-conn' | 'webhook'；其它平台由各自 Adapter 定义。 */
+  connectionMode?: string
+  /** 只允许 env:XXX / secret:XXX 引用，永不落明文（需求文档三十一）。 */
+  credentials: Record<string, SecretRef>
+  routing: AdapterRouting
   capabilities: AdapterCapabilities
-  routing: AdapterRoutingConfig
   access: AccessPolicy
+  /** 平台私有的非密钥选项，如飞书 webhookPort / webhookPath / domain。 */
+  options?: Record<string, string | number | boolean>
 }
 
+/** 群绑定（需求文档二十五）。 */
 export type ChannelBinding = {
   adapterId: string
   externalConversationId: string
   companyChannelId: string
-  employeeId?: string
+  defaultEmployees?: string[]
 }
 
 export type CommunicationConfig = {
@@ -296,101 +310,18 @@ export type CommunicationConfig = {
   channelBindings: ChannelBinding[]
 }
 
-export type AccessDecision = {
-  allowed: boolean
-  reason?: string
-  detail?: string
-  actorRole?: ActorRole
-  permissionMode?: ExternalPermissionMode
-  actorName?: string
-  conversationName?: string
-  allowedEmployees?: string[]
-}
+// ---------------------------------------------------------------------------
+// 对外摘要（需求文档三十一：API 只回掩码，不回完整密钥）
+// ---------------------------------------------------------------------------
 
-export type CommunicationLogger = {
-  info?(message: string): void
-  warn?(message: string): void
-  error?(message: string): void
-  debug?(message: string): void
-}
-
-export type CommunicationEvent =
-  | { type: 'external.adapter.status'; at: number; platform: IMPlatform; adapterId: string; state: AdapterConnectionState; detail?: string }
-  | { type: 'external.message.received'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; senderId: string; senderName?: string; messageId: string; text: string; targetEmployeeId?: string }
-  | { type: 'external.message.sent'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; kind?: OutgoingMessage['kind']; employeeId?: string; text: string }
-  | { type: 'external.message.blocked'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; senderId: string; reason?: string }
-  | { type: 'external.write.denied'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; employeeId?: string; tools: string[] }
-
-export type CommunicationEventSink = { emit(event: CommunicationEvent): void }
-
-export type RosterEntry = {
-  id: string
-  name: string
-  role: string
-  emoji?: string
-  department?: string
-  brief?: string
-  aliases: string[]
-  keywords: string[]
-}
-
-export type EmployeeDispatchRequest = {
-  employeeId: string
-  text: string
-  taskSource: TaskSource
-  platform: MessagePlatform
-  adapterId: string
-  conversationId: string
-  companyChannelId?: string
-  senderId: string
-  senderName?: string
-  actorRole: ActorRole
-  permissionMode: ExternalPermissionMode
-  writeAllowed: boolean
-  writeGate: WriteGate
-  attachments: AttachmentRef[]
-  hops: number
-}
-
-export type EmployeeDispatchResult = {
-  ok: boolean
-  text: string
-  error?: string
-  usedTools?: string[]
-  handoffTo?: string
-}
-
-export type EmployeeDispatcher = (request: EmployeeDispatchRequest) => Promise<EmployeeDispatchResult>
-
-export type TimelineEntry = {
-  id: string
-  at: number
-  platform: MessagePlatform
-  adapterId: string
-  conversationId: string
-  direction: 'in' | 'out' | 'system'
-  text: string
-  senderId?: string
-  senderName?: string
-  employeeId?: string
-  employeeName?: string
-  kind?: OutgoingMessage['kind']
-  permissionMode?: ExternalPermissionMode
-}
-
-export type CredentialSummary = {
-  field: string
-  ref: SecretRef
-  configured: boolean
-  masked: string
-}
+export type CredentialSummary = { field: string; ref: SecretRef; configured: boolean; masked: string }
 
 export type AdapterSummary = {
   id: string
   platform: IMPlatform
   name: string
   enabled: boolean
-  connectionMode: string
+  connectionMode?: string
   state: AdapterConnectionState
   detail?: string
   lastEventAt?: number
@@ -398,17 +329,12 @@ export type AdapterSummary = {
   receivedCount: number
   sentCount: number
   capabilities: AdapterCapabilities
-  routing: AdapterRoutingConfig
+  routing: AdapterRouting
   credentials: CredentialSummary[]
+  /** 便于 UI 直接显示：飞书 appId 掩码 + appSecret 是否已配置。 */
   appId?: string
   appSecretConfigured?: boolean
-  access: {
-    allowUnknownUsers: boolean
-    allowUnknownConversations: boolean
-    defaultPermissionMode: ExternalPermissionMode
-    actorCount: number
-    conversationCount: number
-  }
+  access: { allowUnknownUsers: boolean; allowUnknownConversations: boolean; defaultPermissionMode: ExternalPermissionMode; actorCount: number; conversationCount: number }
 }
 
 export type CommunicationSummary = {
@@ -418,101 +344,245 @@ export type CommunicationSummary = {
   maxEmployeeHops: number
 }
 
+/** 掩码：只保留尾部 4 位，其余固定成 ****，绝不返回完整值。 */
+export function maskSecretValue(value: string | undefined, prefixHint = ''): string {
+  const text = String(value ?? '')
+  if (!text) return ''
+  const tail = text.slice(-4)
+  const head = prefixHint && text.startsWith(prefixHint) ? prefixHint : text.slice(0, Math.min(4, Math.max(0, text.length - 4)))
+  return `${head}****${tail}`
+}
+
+/** 掩码 SecretRef 本身（引用名不是密钥，但仍不展开值）。 */
+export function describeSecretRef(ref: SecretRef): string {
+  return ref.startsWith('env:') ? `环境变量 ${ref.slice(4)}` : `密钥库 ${ref.slice(7)}`
+}
+
 // ---------------------------------------------------------------------------
-// 配置归一化与 Secret 安全
+// 配置清洗：明文密钥一律拒绝入库（需求文档三十一 + 五十七）
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CAPABILITIES: AdapterCapabilities = { text: true, image: false, file: false, audio: false, video: false, thread: false, reaction: false }
-const EMPTY_ACCESS: AccessPolicy = { allowUnknownUsers: false, allowUnknownConversations: false, defaultPermissionMode: SAFE_PERMISSION_FLOOR, actors: [], conversations: [] }
-
-function asBool(value: unknown, fallback: boolean): boolean { return typeof value === 'boolean' ? value : fallback }
-function asArray<T = unknown>(value: unknown): T[] { return Array.isArray(value) ? value : [] }
-function uniqStrings(values: unknown[]): string[] { return Array.from(new Set(values.map(String).map((item) => item.trim()).filter(Boolean))) }
-
-export function normalizeCommunicationConfig(input: unknown): CommunicationConfig {
-  const raw = input && typeof input === 'object' ? input as any : {}
-  const adapters = asArray<any>(raw.adapters).map((item) => normalizeAdapter(item))
-  const ids = new Set<string>()
-  for (const adapter of adapters) {
-    if (ids.has(adapter.id)) throw new Error(`通讯渠道 id 重复：${adapter.id}`)
-    ids.add(adapter.id)
+export function assertCredentialRefs(adapterId: string, credentials: Record<string, unknown>): Record<string, SecretRef> {
+  const result: Record<string, SecretRef> = {}
+  for (const [field, value] of Object.entries(credentials || {})) {
+    if (value === undefined || value === null || value === '') continue
+    if (!isSecretRef(value)) {
+      throw new Error(`通讯渠道 ${adapterId} 的凭据 ${field} 必须写成 env:XXX 或 secret:XXX 引用，禁止明文密钥`)
+    }
+    result[field] = value
   }
-  return {
-    adapters,
-    channelBindings: asArray<any>(raw.channelBindings).map((item) => ({
-      adapterId: String(item?.adapterId || '').trim(),
-      externalConversationId: String(item?.externalConversationId || '').trim(),
-      companyChannelId: String(item?.companyChannelId || '').trim(),
-      employeeId: item?.employeeId ? String(item.employeeId).trim() : undefined,
-    })).filter((item) => item.adapterId && item.externalConversationId && item.companyChannelId),
+  return result
+}
+
+/** options 里出现任何疑似明文密钥字段一律拒绝。 */
+export function assertNoRawSecrets(adapterId: string, options: Record<string, unknown> | undefined): void {
+  for (const field of Object.keys(options || {})) {
+    if ((RAW_SECRET_FIELDS as readonly string[]).includes(field)) {
+      throw new Error(`通讯渠道 ${adapterId} 的 options.${field} 疑似明文密钥，请改用 credentials 里的 env:/secret: 引用`)
+    }
   }
 }
 
-function normalizeAdapter(input: any): CommunicationAdapterConfig {
-  const item = input && typeof input === 'object' ? input : {}
-  for (const field of RAW_SECRET_FIELDS) {
-    if (Object.prototype.hasOwnProperty.call(item, field) && item[field] != null) throw new Error(`通讯配置不允许明文字段 ${field}，请改用 credentials 里的 env:/secret: 引用`)
+function normalizeActorRule(row: any, fallback: ExternalPermissionMode): ExternalActorRule | null {
+  const userId = String(row?.userId || row?.id || '').trim()
+  if (!userId) return null
+  const raw = row?.permissionMode ?? row?.permission
+  return { userId, name: row?.name ? String(row.name) : undefined, role: normalizeActorRole(row?.role), permissionMode: raw === undefined ? fallback : normalizePermissionMode(raw) }
+}
+
+function normalizeConversationRule(row: any, fallback: ExternalPermissionMode): ExternalConversationRule | null {
+  const conversationId = String(row?.conversationId || row?.id || row?.chatId || '').trim()
+  if (!conversationId) return null
+  const allowed = Array.isArray(row?.allowedEmployees) ? row.allowedEmployees.map(String).filter(Boolean) : undefined
+  const raw = row?.permissionMode ?? row?.permission
+  return { conversationId, name: row?.name ? String(row.name) : undefined, permissionMode: raw === undefined ? fallback : normalizePermissionMode(raw), allowedEmployees: allowed?.length ? allowed : undefined }
+}
+
+export function normalizeAccessPolicy(raw: any): AccessPolicy {
+  // 没写档位的规则统一落到 defaultPermissionMode（默认 read-only），不给任何隐式提权。
+  const fallback = normalizePermissionMode(raw?.defaultPermissionMode ?? raw?.permissionMode ?? SAFE_PERMISSION_FLOOR)
+  return {
+    defaultPermissionMode: fallback,
+    allowUnknownUsers: raw?.allowUnknownUsers === true,
+    allowUnknownConversations: raw?.allowUnknownConversations === true,
+    actors: (Array.isArray(raw?.actors) ? raw.actors : Array.isArray(raw?.allowUsers) ? raw.allowUsers : []).map((row: any) => normalizeActorRule(row, fallback)).filter((item: ExternalActorRule | null): item is ExternalActorRule => !!item),
+    conversations: (Array.isArray(raw?.conversations) ? raw.conversations : Array.isArray(raw?.allowConversations) ? raw.allowConversations : []).map((row: any) => normalizeConversationRule(row, fallback)).filter((item: ExternalConversationRule | null): item is ExternalConversationRule => !!item),
   }
-  const platform = String(item.platform || '').trim().toLowerCase()
-  if (!IM_PLATFORMS.includes(platform as IMPlatform)) throw new Error(`未知通讯平台：${platform || '(空)'}`)
-  const id = String(item.id || '').trim()
-  if (!id) throw new Error('通讯渠道 id 不能为空')
-  const credentialsRaw = item.credentials && typeof item.credentials === 'object' ? item.credentials : {}
-  const credentials: CredentialMap = {}
-  for (const [key, value] of Object.entries(credentialsRaw)) {
-    if (!isSecretRef(value)) throw new Error(`通讯渠道 ${id} 的 credentials.${key} 必须是 env:/secret: 引用`)
-    credentials[key] = value
+}
+
+function normalizeRouting(raw: any): AdapterRouting {
+  const hops = Number(raw?.maxHops ?? raw?.maxEmployeeHops ?? DEFAULT_MAX_EMPLOYEE_HOPS)
+  return {
+    defaultTarget: String(raw?.defaultTarget || SECRETARY_ID) || SECRETARY_ID,
+    recognizeMentions: raw?.recognizeMentions !== false,
+    allowEmployeeCollaboration: raw?.allowEmployeeCollaboration === true,
+    maxHops: Number.isFinite(hops) ? Math.max(0, Math.min(12, Math.floor(hops))) : DEFAULT_MAX_EMPLOYEE_HOPS,
+    notifyUndeliverable: raw?.notifyUndeliverable !== false,
   }
-  const accessRaw = item.access && typeof item.access === 'object' ? item.access : {}
-  const actors = asArray<any>(accessRaw.actors).map((row) => ({
-    userId: String(row?.userId || '').trim(),
-    name: row?.name ? String(row.name).trim() : undefined,
-    role: normalizeActorRole(row?.role),
-    permissionMode: normalizePermissionMode(row?.permissionMode),
-  })).filter((row) => row.userId)
-  const conversations = asArray<any>(accessRaw.conversations).map((row) => ({
-    conversationId: String(row?.conversationId || '').trim(),
-    name: row?.name ? String(row.name).trim() : undefined,
-    permissionMode: normalizePermissionMode(row?.permissionMode),
-    allowedEmployees: uniqStrings(asArray(row?.allowedEmployees)),
-  })).filter((row) => row.conversationId)
-  const routingRaw = item.routing && typeof item.routing === 'object' ? item.routing : {}
+}
+
+function normalizeCapabilities(raw: any, platform: IMPlatform): AdapterCapabilities {
+  const fallback = platform === 'feishu'
+  return {
+    text: raw?.text !== false,
+    image: raw?.image === true || (raw?.image === undefined && fallback),
+    file: raw?.file === true || (raw?.file === undefined && fallback),
+    audio: raw?.audio === true,
+    video: raw?.video === true,
+  }
+}
+
+export function normalizePlatform(value: unknown): IMPlatform | null {
+  const text = String(value ?? '').trim().toLowerCase()
+  return (IM_PLATFORMS as string[]).includes(text) ? (text as IMPlatform) : null
+}
+
+/** 把用户写在 cordis.yml 里的松散配置清洗成严格结构；任何明文密钥直接 throw。 */
+export function normalizeAdapterConfig(raw: any): CommunicationAdapterConfig {
+  const platform = normalizePlatform(raw?.platform)
+  if (!platform) throw new Error(`未知的通讯平台：${String(raw?.platform)}（当前支持 feishu / qq / wechat）`)
+  const id = String(raw?.id || platform).trim() || platform
+  assertNoRawSecrets(id, raw?.options)
+  const options: Record<string, string | number | boolean> = {}
+  for (const [key, value] of Object.entries(raw?.options || {})) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') options[key] = value
+  }
   return {
     id,
-    platform: platform as IMPlatform,
-    name: String(item.name || id).trim(),
-    enabled: asBool(item.enabled, true),
-    connectionMode: String(item.connectionMode || '').trim(),
-    credentials,
-    capabilities: {
-      text: asBool(item.capabilities?.text, DEFAULT_CAPABILITIES.text),
-      image: asBool(item.capabilities?.image, DEFAULT_CAPABILITIES.image),
-      file: asBool(item.capabilities?.file, DEFAULT_CAPABILITIES.file),
-      audio: asBool(item.capabilities?.audio, DEFAULT_CAPABILITIES.audio),
-      video: asBool(item.capabilities?.video, DEFAULT_CAPABILITIES.video),
-      thread: asBool(item.capabilities?.thread, DEFAULT_CAPABILITIES.thread),
-      reaction: asBool(item.capabilities?.reaction, DEFAULT_CAPABILITIES.reaction),
-    },
-    routing: {
-      defaultTarget: String(routingRaw.defaultTarget || SECRETARY_ID).trim() || SECRETARY_ID,
-      recognizeMentions: asBool(routingRaw.recognizeMentions, true),
-      allowEmployeeHandoff: asBool(routingRaw.allowEmployeeHandoff, true),
-      maxHops: Math.max(0, Math.min(12, Math.floor(Number(routingRaw.maxHops) || DEFAULT_MAX_EMPLOYEE_HOPS))),
-    },
-    access: {
-      allowUnknownUsers: asBool(accessRaw.allowUnknownUsers, false),
-      allowUnknownConversations: asBool(accessRaw.allowUnknownConversations, false),
-      defaultPermissionMode: normalizePermissionMode(accessRaw.defaultPermissionMode),
-      actors,
-      conversations,
-    },
+    platform,
+    name: String(raw?.name || (platform === 'feishu' ? '飞书' : platform === 'qq' ? 'QQ' : '微信')),
+    enabled: raw?.enabled === true,
+    connectionMode: raw?.connectionMode ? String(raw.connectionMode) : undefined,
+    credentials: assertCredentialRefs(id, raw?.credentials || {}),
+    routing: normalizeRouting(raw?.routing),
+    capabilities: normalizeCapabilities(raw?.capabilities, platform),
+    access: normalizeAccessPolicy(raw?.access ?? raw?.security),
+    options: Object.keys(options).length ? options : undefined,
   }
 }
 
-export function maskSecretValue(value: string | undefined, prefix = ''): string {
-  if (!value) return ''
-  const text = String(value)
-  if (text.length <= 4) return '****'
-  const head = prefix && text.startsWith(prefix) ? prefix : text.slice(0, Math.min(3, text.length))
-  return `${head}****${text.slice(-2)}`
+export function normalizeChannelBinding(raw: any): ChannelBinding | null {
+  const adapterId = String(raw?.adapterId || '').trim()
+  const externalConversationId = String(raw?.externalConversationId || raw?.chatId || '').trim()
+  const companyChannelId = String(raw?.companyChannelId || raw?.channelId || '').trim()
+  if (!adapterId || !externalConversationId || !companyChannelId) return null
+  const defaults = Array.isArray(raw?.defaultEmployees) ? raw.defaultEmployees.map(String).filter(Boolean) : undefined
+  return { adapterId, externalConversationId, companyChannelId, defaultEmployees: defaults?.length ? defaults : undefined }
+}
+
+export function normalizeCommunicationConfig(raw: any): CommunicationConfig {
+  const adapters = (Array.isArray(raw?.adapters) ? raw.adapters : []).map(normalizeAdapterConfig)
+  const bindings = (Array.isArray(raw?.channelBindings) ? raw.channelBindings : []).map(normalizeChannelBinding).filter((item: ChannelBinding | null): item is ChannelBinding => !!item)
+  return { adapters, channelBindings: bindings }
+}
+
+// ---------------------------------------------------------------------------
+// Gateway 访问裁决
+// ---------------------------------------------------------------------------
+
+export type AccessDecision =
+  | { allowed: true; actorRole: ActorRole; permissionMode: ExternalPermissionMode; actorName?: string; conversationName?: string; allowedEmployees?: string[] }
+  | { allowed: false; reason: 'unknown-user' | 'unknown-conversation' | 'adapter-disabled'; detail: string }
+
+// ---------------------------------------------------------------------------
+// Router 契约
+// ---------------------------------------------------------------------------
+
+/** 员工名册项：Web 与 IM 共用同一份 id（需求文档二十九）。 */
+export type RosterEntry = {
+  id: string
+  name: string
+  role: string
+  emoji?: string
+  department?: string
+  brief?: string
+  aliases?: string[]
+  keywords?: string[]
+}
+
+export type RouteTargetKind = 'employee' | 'secretary'
+
+export type RouteDecision = {
+  kind: RouteTargetKind
+  employeeId: string
+  employeeName: string
+  /** mention=文本或平台 @；binding=群默认负责人；default=渠道 defaultTarget；auto=关键词匹配；fallback=兜底给秘书。 */
+  reason: 'mention' | 'binding' | 'default' | 'auto' | 'fallback'
+  companyChannelId?: string
+  /** 命中的其它 @ 对象（第一版只直达第一位，其余记录下来供前端展示）。 */
+  alsoMentioned: string[]
+}
+
+export type EmployeeDispatchRequest = {
+  employeeId: string
+  employeeName: string
+  text: string
+  attachments: AttachmentRef[]
+  platform: MessagePlatform
+  adapterId: string
+  conversationId: string
+  companyChannelId?: string
+  senderId: string
+  senderName?: string
+  actorRole: ActorRole
+  permissionMode: ExternalPermissionMode
+  /** Read Only 渠道下恒为 false，员工运行时必须据此禁用写工具。 */
+  writeAllowed: boolean
+  /** writeAllowed 的执行体：真正拦写的闸门对象，运行时必须用它过滤/校验工具。 */
+  writeGate: WriteGate
+  /** 已经过的员工转发次数（需求文档三十六）。 */
+  hop: number
+  maxHops: number
+  messageId: string
+  threadId?: string
+  /** 便于持久化层写 TaskHistory.source。 */
+  taskSource: TaskSource
+}
+
+export type EmployeeDispatchResult = {
+  ok: boolean
+  text: string
+  /** 员工希望把任务转交给另一位同事；Router 负责校验 hop 上限与协作开关。 */
+  handoffTo?: string
+  error?: string
+  /** 这次派活真正执行过的工具名。只读渠道里出现写工具 = 越权，Router 会拦掉回复并如实上报。 */
+  usedTools?: string[]
+}
+
+/** 真正跑员工 Runtime 的实现由 host 注入；未注入时 Router 绝不编造回复。 */
+export type EmployeeDispatcher = (request: EmployeeDispatchRequest) => Promise<EmployeeDispatchResult>
+
+// ---------------------------------------------------------------------------
+// Company Event（需求文档三十二 / 三十三）
+// ---------------------------------------------------------------------------
+
+export type CommunicationEvent =
+  | { type: 'external.message.received'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; companyChannelId?: string; messageId: string; senderId: string; senderName?: string; text: string; attachments: AttachmentRef[]; actorRole: ActorRole; permissionMode: ExternalPermissionMode; targetEmployeeId?: string }
+  | { type: 'external.message.blocked'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; senderId: string; reason: string }
+  | { type: 'external.message.sent'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; companyChannelId?: string; employeeId?: string; employeeName?: string; text: string; kind: 'employee-reply' | 'notice' | 'system' }
+  | { type: 'external.handoff.limited'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; fromEmployeeId: string; toEmployeeId: string; hop: number; maxHops: number }
+  /** 只读渠道里的写操作。blocked=true：闸门当场拦下，写没有发生；false：运行时越权执行了，回复已被拦掉。 */
+  | { type: 'external.write.denied'; at: number; platform: MessagePlatform; adapterId: string; conversationId: string; employeeId: string; tools: string[]; blocked: boolean }
+  | { type: 'external.adapter.status'; at: number; platform: MessagePlatform; adapterId: string; state: AdapterConnectionState; detail?: string }
+
+export type CommunicationEventSink = { emit(event: CommunicationEvent): void }
+
+export type CommunicationLogger = { info?: (message: string) => void; warn?: (message: string) => void; error?: (message: string) => void }
+
+/** 网页群聊镜像用的时间线条目：Web 与 IM 看到的是同一条消息（需求文档五十六）。 */
+export type TimelineEntry = {
+  id: string
+  at: number
+  direction: 'in' | 'out'
+  platform: MessagePlatform
+  adapterId: string
+  conversationId: string
+  conversationName?: string
+  companyChannelId?: string
+  senderName?: string
+  employeeId?: string
+  employeeName?: string
+  text: string
+  attachments: number
+  permissionMode: ExternalPermissionMode
 }
