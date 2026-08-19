@@ -95,7 +95,7 @@ export function CollaborationPanel(props: {
           h('span', null, `${formatClock(thread.createdAt)} · ${thread.toolName || '消息上下文'}`),
           h('p', null, clip(thread.content
             .replaceAll('\u7eaf\u725b\u9a6c', '赛博公司')
-            .replaceAll('\u6715\u7684\u6c5f\u6c5f', '赛博公司'), 600)),
+            .replaceAll('\u6715\u7684\u6c5f\u5c71', '赛博公司'), 600)),
           thread.reasoning ? h('div', { className: 'cy9-thread-safe' }, '仅展示安全执行摘要；私有推理过程不会暴露。') : null,
         ),
       ) : null,
