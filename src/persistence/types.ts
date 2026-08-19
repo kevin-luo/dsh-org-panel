@@ -190,7 +190,7 @@ export type StoreFileV1 = { version: 1; employees: Record<string, EmployeeEvolut
 export type StoreFileV2 = { version: 2; employees: Record<string, EmployeeEvolutionV2> }
 
 // ---------------------------------------------------------------------------
-// 模型供应商配置（需求文档十一）：公司级配置，落在 company.json，只存 SecretRef。
+// 模型供应商配置：公司级配置，落在 company.json，只存 SecretRef。
 // ---------------------------------------------------------------------------
 
 export type ModelProviderType = 'text' | 'vision' | 'image' | 'video' | 'embedding'
@@ -203,6 +203,12 @@ export type ModelProviderConfig = {
   provider: ModelProviderVendor
   baseUrl?: string
   model: string
+  /**
+   * 文本模型专用：DSH LlmRuntime 中真实注册的 provider route。
+   * 它与本项目自己的 providerId / provider(vendor) 是两回事，绝不允许运行时猜映射。
+   * 员工子代理只有在该 route 真实存在时才会通过 agentOptions.provider/model 使用此配置。
+   */
+  dshProvider?: string
   /** 只允许 env:XXX / secret:XXX 引用，永远不落明文。 */
   apiKeyRef?: SecretRef
   timeout?: number
@@ -216,6 +222,7 @@ export type ModelProviderSummary = {
   provider: ModelProviderVendor
   model: string
   baseUrl?: string
+  dshProvider?: string
   apiKeyRef?: SecretRef
   apiKeyConfigured: boolean
   enabled: boolean
