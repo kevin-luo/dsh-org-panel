@@ -1,17 +1,19 @@
 // 「赛博公司」host 装配入口 v3。
 //
 // 分层：host-v2 负责员工 / 记忆 / 技能 / 路由这套核心（8 个工具原样保留），
-// 这里在它之上把 v2.0 的四个能力层挂上去，全部复用 host-v2 已经建好的 Store 实例：
+// 这里在它之上把 v2.0 的能力层挂上去，全部复用 host-v2 已经建好的 Store 实例：
 //   1. Community Market —— 真实 DSH 社区插件搜索（只披露不安装）
-//   2. Model Gateway    —— 多模型能力路由 + vision_analyze（没配模型就如实报错，绝不脑补图片）
-//   3. Plugin Runtime   —— 插件安装申请 / 人类审批 / 真实验证 / 技能证据
-//   4. Communication    —— 飞书 / QQ / 微信 外部渠道（未配置时安静降级）
-// 再加一条 /org-panel RPC 频道，把上面四层的真实台账直接送到浏览器里的设置中心。
+//   2. Task Skill Growth —— 真实任务结果自动沉淀 SkillEvidence
+//   3. Model Gateway    —— 多模型能力路由 + vision_analyze（没配模型就如实报错，绝不脑补图片）
+//   4. Plugin Runtime   —— 插件安装申请 / 人类审批 / 真实验证 / 技能证据
+//   5. Communication    —— 飞书 / QQ / 微信 外部渠道（未配置时安静降级）
+// 再加一条 /org-panel RPC 频道，把上面能力层的真实台账直接送到浏览器里的设置中心。
 //
 // 铁律：同一份 evolution.json / company.json 只能有一个写入者。任何新增能力层都必须
 // 通过 core.store / core.company 复用实例，不允许自己 new 一个。
 import { apply as applyCore, inject as coreInject, type Employee, type OrgPanelCore } from './host-v2'
 import { registerCommunityMarket } from './community-market'
+import { installTaskSkillGrowth, type TaskSkillGrowthRuntime } from './capabilities/task-skill-growth'
 import { registerModelGateway, type ModelGateway } from './models/gateway'
 import { registerPluginRuntime, type PluginRuntimeHandle } from './capabilities/plugin-runtime'
 import { registerCommunication, type CommunicationManager } from './integrations/im/manager'
@@ -24,9 +26,10 @@ import type { CompanyEvent } from './runtime/company-events'
 
 export const inject = coreInject
 
-/** 装配好的四层实例。宿主与测试拿它做断言，运行时不依赖它。 */
+/** 装配好的能力层实例。宿主与测试拿它做断言，运行时不依赖它。 */
 export type OrgPanelHostFields = {
   core: OrgPanelCore
+  growth?: TaskSkillGrowthRuntime
   gateway?: ModelGateway
   plugins?: PluginRuntimeHandle | null
   communication?: CommunicationManager
@@ -108,17 +111,26 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   if (!core) return undefined
   registerCommunityMarket(ctx)
 
-  // Company Event Bus：host 侧生产者（Plugin Runtime / 通讯层）统一往这里投真实事件。
+  // Company Event Bus：host 侧生产者（自动成长 / Plugin Runtime / 通讯层）统一往这里投真实事件。
   //
   // 这里以前写的是 `if (!ctx.companyEventBus) ctx.companyEventBus = companyEventBus`。
   // 在真实 cordis Context 上那是一句**必抛**的代码：读没 inject 过的自定义属性抛
   // 「cannot get property "companyEventBus" without inject」，写没 provide 过的属性抛
   // 「cannot set property … in multiple fibers」—— 读写两条路都堵死，没有任何部署形态能跑通。
-  // apply() 在这一行就中断，下面三层一层都挂不上，所以模型 / 插件审批 / 通讯
-  // 从来没有被写过一个字节（不是「写了但前端读不到」）。
-  // 现在改成显式传参（registerCommunication 的第三个参数），
-  // 顺带消掉「ctx 上鸭子类型自动发现」这个第二真相来源。
+  // 现在所有生产者都走显式依赖，不再往 ctx 上挂第二真相来源。
   companyEventBus.setEmployeeIds(core.employees.map((item) => item.id))
+
+  // 真实任务 → SkillEvidence：直接包住 core.store 的结单入口，所以 staff_chat、会议、外部 IM
+  // 和系统回填共用同一条成长链。只有首次完成、且 outcome 可判定为 success/failed 才记证据。
+  let growth: TaskSkillGrowthRuntime | undefined
+  try {
+    growth = installTaskSkillGrowth(core.store, {
+      emit: (event) => companyEventBus.publish(event as CompanyEvent, 'host'),
+      onError: (error, task) => warn(ctx, task ? `自动技能成长（${task.employeeId}/${task.id}）` : '自动技能成长', error),
+    })
+  } catch (error) {
+    warn(ctx, '自动技能成长', error)
+  }
 
   let gateway: ModelGateway | undefined
   try {
@@ -158,7 +170,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     warn(ctx, '外部通讯层', error)
   }
 
-  // /org-panel RPC 频道：把上面四层的真实状态直接送到浏览器里的设置中心。
+  // /org-panel RPC 频道：把上面能力层的真实状态直接送到浏览器里的设置中心。
   // 无条件调用；没有 connection 时它自己安静降级，绝不抛。
   let channel: OrgPanelChannelHandle | undefined
   try {
@@ -171,11 +183,14 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
   }
 
   // 返回值必须是 cordis 合法 effect（见 OrgPanelHost 的注释）：这是一个 dispose 函数，
-  // 四层实例挂在它的属性上。卸载时先撤 RPC 频道，避免热重载重复注册同一条 HTTP 路由。
+  // 能力层实例挂在它的属性上。卸载时撤 RPC，并恢复被自动成长包装过的 Store 方法，
+  // 避免热重载后同一个结单被两层 wrapper 重复记证据。
   const host = (async () => {
     try { await channel?.dispose() } catch { /* 卸载失败不许拖住整个插件的卸载 */ }
+    try { growth?.dispose() } catch { /* 恢复失败同样不阻断卸载 */ }
   }) as OrgPanelHost
   host.core = core
+  host.growth = growth
   host.gateway = gateway
   host.plugins = plugins
   host.communication = communication
