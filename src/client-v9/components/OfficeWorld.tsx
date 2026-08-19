@@ -1,10 +1,58 @@
-import { createElement as h, useMemo } from 'react'
+import { createElement as h, useMemo, useSyncExternalStore } from 'react'
+import type { CompanySnapshot } from '../../persistence/types'
 import type { Delegation, LegacyStatus, OfficePlacement, StaffDef } from '../types'
-import { legacyToEmployeeStatus, OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
+import { EMPLOYEE_STATUS_LABEL, OFFICE_HEIGHT, OFFICE_WIDTH } from '../types'
 import { officeBase } from '../asset-map'
-import { OFFICE_ZONES, OFFICE_ZOOM_LEVELS } from '../office-layout'
-import { officePlacement } from '../selectors'
+import { OFFICE_ZONES, OFFICE_ZOOM_LEVELS, RECEPTION_DESK } from '../office-layout'
+import type { CompanyPresence, PresenceFallback } from '../selectors'
+import { companyPresence, officePlacement, officePlacementFromRuntime, runtimeToEmployeeStatus } from '../selectors'
+import type { CompanyRuntime, EmployeeRuntimeState } from '../../runtime/company-events'
+import { EMPLOYEE_RUNTIME_LABEL } from '../../runtime/company-events'
+import { companyEventBus } from '../../runtime/event-bus'
+import { companyGameState, employeeGameMap, percent } from '../game/company-game'
 import { EmployeeSprite } from './EmployeeSprite'
+
+const subscribeBus = (listener: () => void) => companyEventBus.subscribe(listener)
+const readBus = () => companyEventBus.snapshot()
+const STATION_ZONE: Record<string, string> = { 'media-lab': 'media-lab', 'server-room': 'server-room', meeting: 'meeting' }
+
+const NOW_ROW: any = {
+  display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+  padding: '5px 12px', borderBottom: '1px solid rgba(67,217,255,.18)',
+  background: 'rgba(9,16,29,.9)', fontSize: 11, lineHeight: '18px',
+}
+const NOW_CHIP: any = { border: 0, background: 'transparent', color: '#9eafc7', font: 'inherit', padding: 0, cursor: 'pointer' }
+const NOW_ALERT: any = {
+  padding: '1px 8px', border: '1px solid rgba(255,86,86,.55)', borderRadius: 999,
+  background: 'rgba(255,86,86,.14)', color: '#ffd9d9', font: 'inherit', fontWeight: 700, cursor: 'pointer',
+}
+const NOW_NAME: any = {
+  padding: '1px 7px', border: '1px solid rgba(255,86,86,.4)', borderRadius: 999,
+  background: 'transparent', color: '#ffc9c9', font: 'inherit', cursor: 'pointer',
+}
+
+function NowRow(props: { presence: CompanyPresence; staff: StaffDef[]; onSelect: (staffId: string) => void }) {
+  const { presence, staff, onSelect } = props
+  const { counts } = presence
+  const nameOf = (id: string) => staff.find((item) => item.id === id)?.name || id
+  const focus = (ids: string[]) => { if (ids.length) onSelect(ids[0]) }
+  return h('div', { className: 'cy9-office-now', style: NOW_ROW },
+    h('b', { style: { color: '#dff8ff' } }, '现在'),
+    h('button', { type: 'button', style: NOW_CHIP, onClick: () => focus(presence.working), title: '定位到第一位工作中的员工' }, `${counts.working} 人工作中`),
+    h('span', { style: { color: '#41506a' } }, '·'),
+    h('button', { type: 'button', style: NOW_CHIP, onClick: () => focus(presence.meeting), title: '定位到会议室' }, `${counts.meeting} 人在会议`),
+    h('span', { style: { color: '#41506a' } }, '·'),
+    h('button', {
+      type: 'button', style: counts.blocked > 0 ? NOW_ALERT : NOW_CHIP, onClick: () => focus(presence.blocked),
+      title: counts.blocked > 0 ? '定位到第一位卡住的员工' : '当前没有人卡住',
+    }, `${counts.blocked} 人卡住`),
+    presence.blocked.map((id) => h('button', {
+      key: id, type: 'button', style: NOW_NAME, onClick: () => onSelect(id),
+      title: presence.reasons[id] ? `${nameOf(id)}：${presence.reasons[id]}` : `${nameOf(id)}：面板没拿到卡住原因`,
+    }, nameOf(id))),
+    presence.eventDriven ? null : h('span', { style: { marginLeft: 'auto', color: '#5b6b86', fontSize: 10 } }, '来自本会话派活记录'),
+  )
+}
 
 export function OfficeWorld(props: {
   staff: StaffDef[]
@@ -17,20 +65,83 @@ export function OfficeWorld(props: {
   onSelect: (staffId: string) => void
   onTalk: (staff: StaffDef) => void
   onOpenProfile: (staffId: string) => void
+  /** 经营互动只写进原生 Composer 草稿，由老板确认发送。 */
+  onTrain?: (staff: StaffDef) => void
+  /** 持久化员工快照：用于等级 / XP / 技能树 / 个人空间，不能拿会话动画冒充。 */
+  snapshot?: CompanySnapshot | null
+  /** 事件驱动状态。不传时自动读全局 Company Event Bus，两者都空则退回旧的派活推导。 */
+  runtime?: CompanyRuntime | null
 }) {
   const { staff, statuses, tasksMap, tick, activeStaffId, zoomIdx, onZoom, onSelect, onTalk, onOpenProfile } = props
+  const busRuntime = useSyncExternalStore(subscribeBus, readBus, readBus)
+  const runtime = props.runtime || busRuntime
   const zoom = OFFICE_ZOOM_LEVELS[Math.min(zoomIdx, OFFICE_ZOOM_LEVELS.length - 1)]
+  const growthMap = useMemo(() => employeeGameMap(props.snapshot), [props.snapshot])
+  const companyGrowth = useMemo(() => companyGameState(props.snapshot), [props.snapshot])
+
+  const presence = useMemo(() => {
+    const fallback: Record<string, PresenceFallback> = {}
+    for (const item of staff) {
+      const tasks = tasksMap[item.id] || []
+      const task = tasks.find((entry) => entry.running) || tasks[tasks.length - 1]
+      fallback[item.id] = { status: statuses[item.id] || 'idle', tool: task?.tool }
+    }
+    return companyPresence(staff.map((item) => item.id), runtime, fallback)
+  }, [staff, statuses, tasksMap, runtime])
+  const eventDriven = presence.eventDriven
+
+  // 位置只来自「真实事件 → reducer → station」。tick 只允许控制装饰呼吸灯。
   const placements = useMemo(() => Object.fromEntries(staff.map((item) => {
     const tasks = tasksMap[item.id] || []
     const task = tasks.find((entry) => entry.running) || tasks[tasks.length - 1]
-    return [item.id, { placement: officePlacement(item, statuses[item.id] || 'idle', tick, task), task }]
-  })) as Record<string, { placement: OfficePlacement; task?: Delegation }>, [staff, statuses, tasksMap, tick])
-  const meetingLive = staff.some((item) => (tasksMap[item.id] || []).some((task) => task.running && task.tool === 'staff_meeting'))
+    const state = eventDriven ? runtime.employees[item.id] : undefined
+    const status = runtimeToEmployeeStatus(presence.status[item.id])
+    if (state && state.status !== 'idle') {
+      return [item.id, { placement: officePlacementFromRuntime(item, state), task, state, status }]
+    }
+    return [item.id, { placement: officePlacement(item, presence.legacy[item.id], 0, task), task, state, status }]
+  })) as Record<string, { placement: OfficePlacement; task?: Delegation; state?: EmployeeRuntimeState; status: ReturnType<typeof runtimeToEmployeeStatus> }>,
+  [staff, tasksMap, runtime, eventDriven, presence])
+
+  const busyZones = useMemo(() => {
+    const zones = new Set<string>()
+    for (const item of staff) {
+      const entry = placements[item.id]
+      const station = entry?.state && entry.status !== 'idle' ? entry.state.station : null
+      const zone = station ? STATION_ZONE[station] : null
+      if (zone) zones.add(zone)
+    }
+    if (!eventDriven && presence.meeting.length) zones.add('meeting')
+    return zones
+  }, [staff, placements, presence, eventDriven])
+
+  const notices = runtime?.reception.notices || []
   const base = officeBase()
+  const activeStaff = activeStaffId ? staff.find((item) => item.id === activeStaffId) || null : null
+  const activeEntry = activeStaff ? placements[activeStaff.id] : undefined
+  const activeState = activeEntry?.state
+  const activeGrowth = activeStaff ? growthMap[activeStaff.id] : undefined
+  const activeStaffLine = activeStaff
+    ? (activeState && activeState.status !== 'idle'
+      ? (activeState.tool ? activeState.tool.label : EMPLOYEE_RUNTIME_LABEL[activeState.status])
+      : EMPLOYEE_STATUS_LABEL[activeEntry ? activeEntry.status : 'idle'])
+    : ''
 
   return h('section', { className: 'cy9-office-shell' },
     h('div', { className: 'cy9-office-head' },
-      h('div', null, h('b', null, '赛博公司总部'), h('span', null, '员工状态与真实任务同步')),
+      h('div', null,
+        h('b', null, '赛博公司总部'),
+        h('span', null, '真实工作驱动位置 · 持久履历驱动成长'),
+      ),
+      companyGrowth ? h('div', {
+        title: '所有经营数值来自 evolution.json / CompanySnapshot，不由动画模拟',
+        style: { display: 'flex', gap: 8, color: '#8ea4c4', fontSize: 10, whiteSpace: 'nowrap' },
+      },
+        h('span', null, `总 XP ${companyGrowth.xp}`),
+        h('span', null, `平均 Lv.${companyGrowth.averageLevel.toFixed(1)}`),
+        h('span', null, `专家 ${companyGrowth.experts}`),
+        h('span', null, `成功率 ${percent(companyGrowth.successRate)}`),
+      ) : null,
       h('div', { className: 'cy9-office-legend' },
         h('span', { className: 'working' }, '工作中'), h('span', { className: 'meeting' }, '会议中'), h('span', { className: 'blocked' }, '卡住'),
       ),
@@ -38,6 +149,7 @@ export function OfficeWorld(props: {
         key: level, type: 'button', className: zoomIdx === index ? 'on' : '', onClick: () => onZoom(index),
       }, `${Math.round(level * 100)}%`))),
     ),
+    h(NowRow, { presence, staff, onSelect }),
     h('div', { className: 'cy9-office-viewport' },
       h('div', { className: 'cy9-office-scroll', style: { width: OFFICE_WIDTH * zoom, height: OFFICE_HEIGHT * zoom } },
         h('div', {
@@ -45,19 +157,66 @@ export function OfficeWorld(props: {
           style: { transform: `scale(${zoom})`, backgroundImage: base ? `linear-gradient(180deg, rgba(3,8,20,.04), rgba(3,8,20,.22)), url(${base})` : undefined },
         },
           OFFICE_ZONES.map((zone) => h('div', {
-            key: zone.id, className: `cy9-zone-hotspot${meetingLive && zone.id === 'meeting' ? ' meeting-glow' : ''}`,
+            key: zone.id, className: `cy9-zone-hotspot${busyZones.has(zone.id) ? ' meeting-glow' : ''}`,
             style: { left: zone.x, top: zone.y, width: zone.width, height: zone.height },
           }, h('span', null, zone.title))),
+          notices.length ? h('div', {
+            className: 'cy9-reception-notice',
+            title: notices.map((notice) => `${notice.senderName || '外部消息'}：${notice.preview}`).join('\n'),
+            style: {
+              position: 'absolute', left: RECEPTION_DESK.x, top: RECEPTION_DESK.y, transform: 'translate(-50%, -50%)',
+              padding: '2px 8px', borderRadius: 999, fontSize: 11, lineHeight: '16px', whiteSpace: 'nowrap',
+              background: 'rgba(255,176,32,.92)', color: '#20160a', fontWeight: 600, pointerEvents: 'none', zIndex: 6,
+            },
+          }, `🔔 ${platformLabel(notices[notices.length - 1].platform)}新消息${notices.length > 1 ? ` ×${notices.length}` : ''}`) : null,
           staff.map((item) => {
             const entry = placements[item.id]
             return entry ? h(EmployeeSprite, {
-              key: item.id, staff: item, status: legacyToEmployeeStatus(statuses[item.id] || 'idle', entry.task?.tool),
-              placement: entry.placement, task: entry.task, active: activeStaffId === item.id,
+              key: item.id, staff: item, status: entry.status,
+              placement: entry.placement, task: entry.task, runtime: entry.state, pulse: tick,
+              growth: growthMap[item.id] || null,
+              active: activeStaffId === item.id,
               onSelect, onTalk, onOpenProfile,
             }) : null
           }),
         ),
       ),
     ),
+    activeStaff ? h('div', { className: 'cy9-office-dock', style: { alignItems: 'stretch' } },
+      h('div', { style: { minWidth: 120 } },
+        h('b', null, activeStaff.name),
+        h('span', { style: { display: 'block' } }, activeStaffLine),
+      ),
+      activeGrowth ? h('div', {
+        style: {
+          minWidth: 250, maxWidth: 430, display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '3px 10px',
+          padding: '4px 10px', borderLeft: '1px solid rgba(80,220,255,.2)', color: '#8ea4c4', fontSize: 9,
+        },
+      },
+        h('b', { style: { color: '#a9efff' } }, `Lv.${activeGrowth.level} ${activeGrowth.title}`),
+        h('span', null, `${activeGrowth.xp} XP · 下一等级 ${Math.round(activeGrowth.progress * 100)}%`),
+        h('span', null, `个人空间：${activeGrowth.workspaceTier}`),
+        h('span', null, activeGrowth.topSkill ? `主技能：${activeGrowth.topSkill.name} Lv.${activeGrowth.topSkill.level}` : '主技能：暂无真实证据'),
+        h('span', null, `记忆 ${activeGrowth.memories} · 技能 ${activeGrowth.skills} · 插件 ${activeGrowth.plugins}`),
+        h('span', null, `履历 ${activeGrowth.totalTasks} · 成功率 ${percent(activeGrowth.successRate)} · 证据 ${activeGrowth.evidence}`),
+      ) : h('span', { style: { color: '#65758f', fontSize: 9 } }, '尚未读到持久化成长档案'),
+      h('button', { type: 'button', onClick: () => onOpenProfile(activeStaff.id), title: `打开 ${activeStaff.name} 的长期记忆、技能、履历和插件档案` }, '成长档案'),
+      props.onTrain ? h('button', {
+        type: 'button', onClick: () => props.onTrain!(activeStaff),
+        title: '把成长任务写入原生输入框，由你确认后发送；不会自动刷经验',
+      }, '安排成长') : null,
+      h('button', {
+        type: 'button', className: 'primary',
+        onClick: () => onTalk(activeStaff), title: `把 @${activeStaff.name} 写进下方输入框（不会替你发送）`,
+      }, `@ ${activeStaff.name}`),
+      h('button', { type: 'button', className: 'quiet', onClick: () => onSelect(activeStaff.id), title: '取消选中' }, '收起'),
+    ) : null,
   )
+}
+
+function platformLabel(platform: string): string {
+  if (platform === 'feishu') return '飞书'
+  if (platform === 'qq') return 'QQ'
+  if (platform === 'wechat') return '微信'
+  return '外部'
 }

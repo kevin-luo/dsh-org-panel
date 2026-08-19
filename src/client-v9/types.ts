@@ -1,3 +1,50 @@
+// 「赛博公司」client-v9 类型总线。
+//
+// 单一来源原则：持久化结构（快照 / 履历 / 技能 / 插件 / 模型绑定）由 src/persistence/types.ts 定义，
+// 实时运行时结构（事件 / 员工状态 / 工位）由 src/runtime/company-events.ts 定义。
+// 本文件只负责「UI 自己的形状」+ 把那两处的类型转口出来，绝不重新声明同名结构。
+// 转口全部是 `export type`，编译后零运行时代码，对 client bundle 体积没有影响。
+import type { CompanySnapshot, EmployeeSnapshot } from '../persistence/types'
+
+// --- 持久化层转口（Phase 2 Foundation）------------------------------------
+export type {
+  CompanySnapshot,
+  CompanyTotals,
+  EmployeeSnapshot,
+  EmployeeStatistics,
+  EmployeeMemory,
+  EvolutionLevel,
+  LearnedSkill,
+  MemoryKind,
+  ModelBinding,
+  ModelCapability,
+  ModelProviderSummary,
+  ModelProviderType,
+  PluginBinding,
+  PluginStatus,
+  Reflection,
+  SecretRef,
+  SkillEvidence,
+  SkillSnapshot,
+  TaskHistory,
+  TaskOutcome,
+  TaskSource,
+} from '../persistence/types'
+
+// --- 运行时事件层转口（Phase 3 Company Event Bus）--------------------------
+export type {
+  CompanyEvent,
+  CompanyEventType,
+  CompanyRuntime,
+  EmployeeRuntimeState,
+  EmployeeRuntimeStatus,
+  EmployeeStation,
+  ReceptionNotice,
+  RuntimeMeeting,
+  RuntimeTask,
+  RuntimeTool,
+} from '../runtime/company-events'
+
 export type SkillDef = { name: string; desc?: string }
 
 export type RoleDef = {
@@ -33,8 +80,6 @@ export type OrgPanelConfig = {
 export type EmployeeStatus = 'idle' | 'working' | 'thinking' | 'meeting' | 'blocked' | 'done'
 
 export type LegacyStatus = 'idle' | 'running' | 'done' | 'wait'
-
-export type FlowMode = 'all' | 'chat' | 'trace'
 
 export type Delegation = {
   callId: string
@@ -124,15 +169,6 @@ export type OfficeZone = {
   sign?: string
 }
 
-export type EmployeeState = {
-  id: string
-  status: EmployeeStatus
-  task?: string
-  officePosition?: OfficePlacement
-  xp?: number
-  level?: number
-}
-
 export const STATUS_LABEL: Record<LegacyStatus, string> = {
   running: '干活中',
   done: '已交付',
@@ -166,6 +202,12 @@ export const DEFAULT_CHANNELS: Channel[] = [
   { id: 'data', name: '数据分析频道', departments: ['数据智能部', '市场与情报部'] },
   { id: 'random', name: '随便聊聊', departments: [] },
 ]
+
+/** hydrate 结果：null 表示既没有本 Session 快照，也没有本机缓存（UI 显示 0 / — / 暂无）。 */
+export type CompanyHydrationState = { snapshot: CompanySnapshot | null; cached: boolean }
+
+/** 员工档案面板的数据入参：快照里的那一位员工。 */
+export type EmployeeProfileData = EmployeeSnapshot | null
 
 export const OFFICE_WIDTH = 1200
 export const OFFICE_HEIGHT = 720

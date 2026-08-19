@@ -16,7 +16,12 @@ Host 侧 `EvolutionStore` 默认写入：
 ~/.dsh-org-panel/evolution.json
 ```
 
-也可以通过 `DSH_ORG_PANEL_MEMORY_FILE` 或插件配置 `memoryFile` 指定路径。
+也可以通过 `DSH_ORG_PANEL_MEMORY_FILE` 或插件配置 `memoryFile` 指定路径（见 [CONFIG.md §3](./CONFIG.md#3-数据文件与环境变量)）。
+
+这一个文件里装的不只是记忆：技能、技能证据、复盘、任务履历、插件绑定、模型绑定、统计
+全在里面。公司档案与模型供应商配置在隔壁的 `company.json`，插件审批台账在
+`plugin-approvals.json`。**同一份文件只能有一个写入者** —— host 装配时把同一个 Store 实例
+传给各能力层，任何新增层都不允许自己 new 一个。
 
 长期记忆包含：
 
@@ -50,16 +55,21 @@ Host 侧 `EvolutionStore` 默认写入：
 3. 成功与失败都可成为经验，失败记录会降低重复踩坑概率。
 4. 员工私有记忆只用于工作上下文，不会机械地在每次回复中复述。
 
-## 3. 新增 Host 工具
+## 3. 相关 Host 工具
 
 | 工具 | 用途 |
 | --- | --- |
 | `staff_memory_recall` | 检索员工长期记忆 |
 | `staff_memory_remember` | 写入偏好、事实、经验、工作流 |
 | `staff_skill_learn` | 将已验证工具/插件绑定为员工技能 |
+| `staff_skill_evidence` | 查看某项技能背后的真实调用证据 |
 | `staff_reflect` | 任务复盘并增加成长经验 |
 | `staff_profile` | 查看员工等级、记忆、技能、插件和最近复盘 |
 | `staff_capability_scan` | 扫描当前 Runtime 已暴露的真实工具能力 |
+| `company_snapshot` | 一次性读取全公司持久化状态（前端 hydrate 用） |
+
+> `staff_skill_learn` 不接受「模型自述成功」：必须点名当前 Tool Registry 里真实存在的工具，
+> 等级与经验只由真实调用证据推动。连调十几次说自己成功了，等级不会动，也不会写出一条证据。
 
 ## 4. 插件市场连接方式
 
@@ -88,7 +98,36 @@ staff_skill_learn 绑定为长期技能
 后续任务自动记得该能力
 ```
 
-当前版本不会在没有稳定 Host Marketplace API 的情况下擅自安装第三方插件。自动安装应该由未来的 Marketplace Adapter 完成，并继续遵守“真实安装后才能学会”的约束。
+### 员工主动申请安装（2.0 起）
+
+除了上面这条「已经装好了才发现」的路径，员工现在也可以主动申请装一个插件。
+安装权仍然完全在人类手上：
+
+```text
+staff_plugin_market_search   员工在真实 DSH 社区市场搜索候选（只披露，不安装）
+    ↓
+staff_plugin_install_request 提交申请：用途、仓库、Stars、权限、风险、安装命令、
+                             预期工具、Smoke Test 一并交给老板
+    ↓
+【人类批准】                 老板在「公司设置 → 插件」点批准，
+                             或事先写进配置的 pluginInstall.preapproved
+    ↓
+staff_plugin_install_apply   真实执行安装 + Capability Scan + Smoke Test
+    ↓
+验证通过才沉淀为技能         没通过就保持「未学会」，不许声称学会了
+```
+
+约束（都是代码级的，不是提示词）：
+
+- 没有批准记录时 `staff_plugin_install_apply` 直接报错。
+- 安装命令只允许 `dsh` / `npm` / `pnpm` / `yarn` / `bun` 的 `add|install`；包标识只接受
+  npm 包名与 `github:owner/repo`，URL、tarball、`git+ssh:`、`file:`、本地路径一律拒绝。
+- Smoke Test 只能调用这个插件本次**真实新增**的工具，不是通用工具调用入口；
+  批准之前就已经存在的工具不会被算作这个插件的能力。
+- host 不会绕开 DSH 权限模式自己起进程：运行时没有暴露可用执行器时，如实报错并请老板手动执行，
+  之后用 `staff_plugin_verify` 补验证。
+- `pluginInstall.preapproved` 里写包名被视作老板本人的显式批准（编辑配置文件是人类动作），
+  命中的申请会跳过 UI 审批直接进入安装。
 
 ## 5. 扩展员工
 

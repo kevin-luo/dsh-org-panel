@@ -1,6 +1,6 @@
 {
   "name": "dsh-org-panel",
-  "version": "1.4.0",
+  "version": "2.0.0",
   "description": "「赛博公司」—— DeepSeek Harness 多智能体数字员工工作台：真实独立员工、动态像素办公室、组织架构与可交互工作群",
   "type": "module",
   "main": "lib/index.js",
@@ -35,20 +35,22 @@
     }
   },
   "peerDependencies": {
-    "react": "^18.2.0 || ^19.0.0",
-    "@deepseek-ai/cordis": "^4.0.1"
+    "@deepseek-ai/cordis": "^4.0.1",
+    "react": "^18.2.0 || ^19.0.0"
   },
   "devDependencies": {
-    "sharp": "^0.34.4",
-    "typescript": "^5.5.0",
+    "@types/react": "^18.3.0",
+    "sharp": "^0.35.3",
     "tsdown": "^0.3.0",
-    "@types/react": "^18.3.0"
+    "typescript": "^5.5.0"
   },
   "scripts": {
     "assets:build": "node scripts/build-runtime-assets.mjs",
     "build": "npm run assets:build && tsdown && tsc --emitDeclarationOnly",
     "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "size-check": "node scripts/check-size.mjs",
+    "verify:dsh": "node scripts/verify-dsh-channel.mjs",
     "prepack": "npm run build && npm run size-check"
   },
   "publishConfig": {

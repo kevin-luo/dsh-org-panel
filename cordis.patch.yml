@@ -1,4 +1,8 @@
-# Default composition contributed when this package is installed as a DSH bundle.
+# 安装本包为 DSH bundle 时默认插入的 composition row。
+#
+# 这里**只放能让面板亮起来的最小配置**。模型、插件预批准、飞书这些都会带来
+# 真实的外发请求或安装动作，不该在用户没表态的情况下被一个默认补丁悄悄打开。
+# 需要它们时，把 cordis.example.yml 里对应的段复制进 agent preset 的 composition。
 - insert:
     - id: org-panel
       name: dsh-org-panel

@@ -1,5 +1,7 @@
-import { createElement as h, useEffect, useMemo, useRef, useState } from 'react'
+import { createElement as h, useEffect, useMemo, useRef } from 'react'
 import type { Channel, CompanyMessage, StaffDef } from '../types'
+import type { WorkgroupFeed } from '../work-sessions'
+import { workgroupPlatformLabel } from '../work-sessions'
 import { staffThumb } from '../asset-map'
 import { channelMatchesNode, clip, formatClock, staffOf } from '../selectors'
 import { AssetImage } from './AssetImage'
@@ -7,6 +9,23 @@ import { ChatMessage } from './ChatMessage'
 
 const MIN_HEIGHT = 240
 const MAX_HEIGHT = 420
+
+const WORKGROUP_STYLES: Record<string, any> = {
+  wrap: { display: 'grid', gap: 8, maxWidth: 720, margin: '2px auto 12px' },
+  head: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '0 2px', color: 'var(--muted)' },
+  card: { display: 'grid', gap: 6, padding: '9px 11px', border: '1px solid var(--line)', borderRadius: 8, background: 'linear-gradient(135deg,rgba(67,217,255,.055),rgba(163,107,255,.035))' },
+  top: { display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto', gap: 8, alignItems: 'center' },
+  source: { padding: '2px 6px', border: '1px solid rgba(67,217,255,.28)', borderRadius: 5, color: 'var(--cyan)', fontSize: 9 },
+  team: { display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' },
+}
+
+function relativeWorkTime(value: number): string {
+  const delta = Date.now() - Number(value || 0)
+  if (!Number.isFinite(delta) || delta < 60_000) return '刚刚'
+  if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前`
+  if (delta < 86_400_000) return `${Math.max(1, Math.floor(delta / 3_600_000))} 小时前`
+  return `${Math.max(1, Math.floor(delta / 86_400_000))} 天前`
+}
 
 export function CollaborationPanel(props: {
   channels: Channel[]
@@ -18,23 +37,20 @@ export function CollaborationPanel(props: {
   typingStaff: StaffDef | null
   running: boolean
   promptError: any
+  workgroups: WorkgroupFeed
   activeStaffId: string | null
   onClearStaffFilter: () => void
   collapsed: boolean
   onToggleCollapsed: () => void
   height: number
   onHeight: (height: number) => void
-  draft: string
-  onDraft: (value: string) => void
-  onSend: (text: string) => void
   thread: CompanyMessage | null
   onOpenThread: (message: CompanyMessage) => void
   onCloseThread: () => void
 }) {
-  const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError,
-    activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight, draft, onDraft, onSend,
+  const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError, workgroups,
+    activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight,
     thread, onOpenThread, onCloseThread } = props
-  const [mentionIdx, setMentionIdx] = useState(0)
   const bodyRef = useRef<HTMLDivElement>(null)
   const followRef = useRef(true)
   const gripRef = useRef<{ startY: number; startH: number } | null>(null)
@@ -49,30 +65,11 @@ export function CollaborationPanel(props: {
   const channelCount = useMemo(() => Object.fromEntries(channels.map((channel) => [channel.id,
     channel.departments.length ? staff.filter((item) => channel.departments.includes(item.department || '')).length : staff.length,
   ])), [channels, staff])
-  const mentionQuery = useMemo(() => draft.match(/@([^\s@#]{0,10})$/)?.[1] ?? null, [draft])
-  const mentionCandidates = useMemo(() => mentionQuery == null ? [] : staff.filter((item) => {
-    const query = mentionQuery.toLowerCase()
-    return !query || item.name.toLowerCase().includes(query) || (item.aliases || []).some((alias) => alias.toLowerCase().includes(query))
-  }).slice(0, 7), [mentionQuery, staff])
-  useEffect(() => setMentionIdx(0), [mentionQuery])
   useEffect(() => {
     const el = bodyRef.current
     if (el && followRef.current) el.scrollTop = el.scrollHeight
   }, [visible.length, runningCalls?.length, running, typingStaff])
 
-  const pickMention = (employee: StaffDef) => onDraft(draft.replace(/@[^\s@#]{0,10}$/, `@${employee.name} `))
-  const send = () => { const value = draft.trim(); if (value) { onSend(value); onDraft('') } }
-  const onKeyDown = (event: any) => {
-    if (mentionCandidates.length && mentionQuery != null) {
-      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-        event.preventDefault(); setMentionIdx((mentionIdx + (event.key === 'ArrowDown' ? 1 : -1) + mentionCandidates.length) % mentionCandidates.length); return
-      }
-      if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) {
-        event.preventDefault(); pickMention(mentionCandidates[mentionIdx] || mentionCandidates[0]); return
-      }
-    }
-    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send() }
-  }
   const onGripDown = (event: any) => {
     event.preventDefault(); gripRef.current = { startY: event.clientY, startH: height }
     const move = (next: MouseEvent) => { if (gripRef.current) onHeight(Math.max(MIN_HEIGHT, Math.min(MAX_HEIGHT, gripRef.current.startH + gripRef.current.startY - next.clientY))) }
@@ -80,6 +77,7 @@ export function CollaborationPanel(props: {
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up)
   }
   const channel = channels.find((item) => item.id === channelId)
+  const recentWorkgroups = !activeStaffId && visible.length === 0 && workgroups.available ? workgroups.sessions.slice(0, 3) : []
 
   return h('section', { className: `cy9-collab${collapsed ? ' collapsed' : ''}`, style: { height: collapsed ? 40 : height } },
     h('div', { className: 'cy9-collab-grip', onMouseDown: onGripDown }),
@@ -100,21 +98,31 @@ export function CollaborationPanel(props: {
         h('div', { className: 'cy9-chat-body', ref: bodyRef, role: 'log', 'aria-live': 'polite', onScroll: (event: any) => {
           const el = event.currentTarget as HTMLDivElement; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         } },
-          visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。输入 @员工姓名，消息会直达对应独立子代理。') : null,
+          recentWorkgroups.length ? h('div', { className: 'cy9-workgroups', style: WORKGROUP_STYLES.wrap },
+            h('div', { className: 'cy9-workgroups-head', style: WORKGROUP_STYLES.head },
+              h('b', { style: { color: 'var(--text)', fontSize: 11 } }, '持续工作组'),
+              h('span', { style: { fontSize: 9 } }, 'host 持久档案 · 刷新页面也不会消失'),
+            ),
+            recentWorkgroups.map((group) => h('div', { key: group.id, className: `cy9-workgroup ${group.status}`, style: Object.assign({}, WORKGROUP_STYLES.card, group.status === 'blocked' ? { borderColor: 'rgba(255,111,134,.35)' } : {}) },
+              h('div', { className: 'cy9-workgroup-top', style: WORKGROUP_STYLES.top },
+                h('span', { className: 'cy9-workgroup-source', style: WORKGROUP_STYLES.source }, workgroupPlatformLabel(group.origin?.platform || group.origin?.source)),
+                h('b', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 } }, clip(group.goal, 54)),
+                h('time', { style: { color: 'var(--dim)', fontSize: 9 } }, relativeWorkTime(group.updatedAt)),
+              ),
+              h('div', { className: 'cy9-workgroup-team', style: WORKGROUP_STYLES.team },
+                (group.participants || []).slice(0, 5).map((member) => h('span', { key: member.employeeId, style: { padding: '2px 5px', borderRadius: 5, background: 'rgba(255,255,255,.05)', color: '#cbd8eb', fontSize: 9 } }, member.employeeName)),
+                h('em', { style: { marginLeft: 'auto', color: 'var(--dim)', fontSize: 9, fontStyle: 'normal' } }, `${group.turnCount || 0} 次员工交付 · ${group.messageCount || 0} 轮消息`),
+              ),
+              group.lastTurn?.reply ? h('p', { style: { margin: 0, color: 'var(--muted)', fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, `${group.lastTurn.employeeName || '员工'}：${clip(group.lastTurn.reply, 100)}`) : null,
+            )),
+          ) : visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。直接在下方输入任务，系统会按任务内容自动拉合适的员工进工作组；输入 @姓名 可以锁定指定员工。') : null,
           visible.map((message) => h(ChatMessage, { key: message.id, message, staff, onOpenThread })),
           (runningCalls || []).map((call: any) => h('div', { key: call.callId, className: 'cy9-msg-tool running' },
             h('span', { className: 'cy9-msg-tool-icon' }, 'RUN'), h('span', { className: 'cy9-msg-tool-main' }, h('b', null, String(call.name || 'tool')), h('span', null, '正在执行真实工具…')),
           )),
-          typingStaff ? h('div', { className: 'cy9-msg-typing' }, h(AssetImage, { src: staffThumb(typingStaff.id), alt: typingStaff.name, fallback: typingStaff.name }), `${typingStaff.name} 正在输入`, h('span', null, h('i'), h('i'), h('i'))) : running ? h('div', { className: 'cy9-msg-typing' }, '秘书正在协调任务', h('span', null, h('i'), h('i'), h('i'))) : null,
+          typingStaff ? h('div', { className: 'cy9-msg-typing' }, h(AssetImage, { src: staffThumb(typingStaff.id), alt: typingStaff.name, fallback: typingStaff.name }), `${typingStaff.name} 正在输入`, h('span', null, h('i'), h('i'), h('i'))) : running ? h('div', { className: 'cy9-msg-typing' }, '正在根据任务组队并推进工作', h('span', null, h('i'), h('i'), h('i'))) : null,
         ),
-        h('div', { className: 'cy9-chat-input' },
-          mentionCandidates.length && mentionQuery != null ? h('div', { className: 'cy9-mention-pop' }, mentionCandidates.map((employee, index) => h('button', {
-            key: employee.id, type: 'button', className: index === mentionIdx ? 'on' : '', onClick: () => pickMention(employee),
-          }, h(AssetImage, { src: staffThumb(employee.id), alt: employee.name, fallback: employee.name }), h('b', null, employee.name), h('span', null, employee.role)))) : null,
-          h('textarea', { 'data-cy9-composer': 'true', value: draft, placeholder: `在 # ${channel?.name || '团队总览'} 输入消息，@ 点名员工…`, onChange: (event: any) => onDraft(event.target.value), onKeyDown }),
-          h('span', null, 'Enter 发送 · Shift+Enter 换行'),
-          h('button', { type: 'button', className: 'cy9-chat-send', disabled: !draft.trim(), onClick: send }, '发送'),
-        ),
+        h('div', { className: 'cy9-chat-hint' }, `直接发任务会自动组队 · 输入 @ 可锁定员工${channel ? ` · 当前 # ${channel.name}` : ''}`),
       ),
       thread ? h('aside', { className: 'cy9-thread' },
         h('div', { className: 'cy9-thread-head' }, h('b', null, thread.kind === 'tool' ? '工具轨迹' : '讨论线程'), h('button', { type: 'button', onClick: onCloseThread }, '关闭')),

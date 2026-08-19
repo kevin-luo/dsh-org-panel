@@ -18,6 +18,7 @@ import {
   settlementMaterial,
   staffChildIndex,
   staffOf,
+  stripRouterSentinels,
 } from './selectors'
 
 let messageSeq = 0
@@ -50,6 +51,14 @@ function cleanPublicReply(text: string): string {
     .trim()
 }
 
+/**
+ * 可公开正文：路由哨兵一律剥掉，剥完还剩真实内容就照常上屏。
+ * 只有「剥完什么都不剩」或整条本来就是路由话术时才返回空串（= 不产生这条消息）。
+ */
+function publicBody(text: string): string {
+  return isRouterOnlyMessage(text) ? '' : stripRouterSentinels(text)
+}
+
 /** 把会话节点流映射为公司群聊消息（老板/员工本人/秘书/工具卡/会议/系统事件）。 */
 export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMessage[] {
   const out: CompanyMessage[] = []
@@ -64,8 +73,8 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
         const routed = children.get(String(source.senderSessionId))
         const employee = routed ? staffOf(routed.staffId, staff) : undefined
         if (employee) {
-          const text = cleanSettlementReply(extractText(node.content))
-          if (text && !isRouterOnlyMessage(text)) {
+          const text = publicBody(cleanSettlementReply(extractText(node.content)))
+          if (text) {
             out.push({
               id: nextId('reply', node), channelId: '', node,
               sender: { type: 'employee', staffId: employee.id },
@@ -90,12 +99,14 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
       if (isStaffRoutingAssistant(node)) continue
       const material = assistantMaterial(node.blocks || [])
       if (!material.text && !material.images) continue
-      if (isRouterOnlyMessage(material.text) && !material.images) continue
+      // 秘书那条消息可能是「哨兵 + 真实交代」混排，剥完还剩内容就必须显示，只有全是哨兵才整条隐藏。
+      const body = publicBody(material.text)
+      if (!body && !material.images) continue
       out.push({
         id: nextId('sec', node), channelId: '', node,
         sender: { type: 'secretary' },
-        content: material.text || (material.images ? `（附 ${material.images} 张图片）` : ''),
-        mentions: extractMentions(material.text, staff),
+        content: body || (material.images ? `（附 ${material.images} 张图片）` : ''),
+        mentions: extractMentions(body, staff),
         kind: 'message', createdAt: time,
         reasoning: material.reasoning || undefined,
       })
@@ -108,11 +119,12 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
       const employee = routed ? staffOf(routed.staffId, staff) : undefined
       if (employee) {
         const material = settlementMaterial(settled.reply)
-        if (material.text && !isRouterOnlyMessage(material.text)) {
+        const body = publicBody(material.text)
+        if (body) {
           out.push({
             id: nextId('staff', node), channelId: '', node,
             sender: { type: 'employee', staffId: employee.id },
-            content: cleanPublicReply(material.text), mentions: extractMentions(material.text, staff),
+            content: cleanPublicReply(body), mentions: extractMentions(body, staff),
             kind: 'message', createdAt: time,
             reasoning: material.reasoning || undefined,
           })
@@ -155,8 +167,8 @@ export function buildCompanyMessages(nodes: any[], staff: StaffDef[]): CompanyMe
         const employee = staffOf(routed.staffId, staff)
         // state === 'accepted' 表示员工正在独立子代理中处理，用“正在输入”呈现，不产生消息。
         if (employee && routed.state === 'replied') {
-          const reply = cleanStaffResult(text)
-          if (reply && !isRouterOnlyMessage(reply)) {
+          const reply = publicBody(cleanStaffResult(text))
+          if (reply) {
             out.push({
               id: nextId('direct', node), channelId: '', node,
               sender: { type: 'employee', staffId: employee.id },
