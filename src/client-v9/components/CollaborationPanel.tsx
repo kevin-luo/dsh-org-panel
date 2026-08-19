@@ -10,10 +10,18 @@ import { ChatMessage } from './ChatMessage'
 const MIN_HEIGHT = 240
 const MAX_HEIGHT = 420
 
+const WORKGROUP_STYLES: Record<string, any> = {
+  wrap: { display: 'grid', gap: 8, maxWidth: 720, margin: '2px auto 12px' },
+  head: { display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 12, padding: '0 2px', color: 'var(--muted)' },
+  card: { display: 'grid', gap: 6, padding: '9px 11px', border: '1px solid var(--line)', borderRadius: 8, background: 'linear-gradient(135deg,rgba(67,217,255,.055),rgba(163,107,255,.035))' },
+  top: { display: 'grid', gridTemplateColumns: 'auto minmax(0,1fr) auto', gap: 8, alignItems: 'center' },
+  source: { padding: '2px 6px', border: '1px solid rgba(67,217,255,.28)', borderRadius: 5, color: 'var(--cyan)', fontSize: 9 },
+  team: { display: 'flex', gap: 5, alignItems: 'center', flexWrap: 'wrap' },
+}
+
 function relativeWorkTime(value: number): string {
   const delta = Date.now() - Number(value || 0)
-  if (!Number.isFinite(delta) || delta < 0) return '刚刚'
-  if (delta < 60_000) return '刚刚'
+  if (!Number.isFinite(delta) || delta < 60_000) return '刚刚'
   if (delta < 3_600_000) return `${Math.max(1, Math.floor(delta / 60_000))} 分钟前`
   if (delta < 86_400_000) return `${Math.max(1, Math.floor(delta / 3_600_000))} 小时前`
   return `${Math.max(1, Math.floor(delta / 86_400_000))} 天前`
@@ -40,8 +48,6 @@ export function CollaborationPanel(props: {
   onOpenThread: (message: CompanyMessage) => void
   onCloseThread: () => void
 }) {
-  // 工作群只负责「看」：频道 / 消息流 / 持久工作组 / Tool Trace / thread / typing。
-  // 「写」全部交给 DSH 原生 Composer（本面板下方的 [data-composer-seat]），这里没有任何自制输入控件。
   const { channels, channelId, onChannel, messages, staff, runningCalls, typingStaff, running, promptError, workgroups,
     activeStaffId, onClearStaffFilter, collapsed, onToggleCollapsed, height, onHeight,
     thread, onOpenThread, onCloseThread } = props
@@ -92,22 +98,22 @@ export function CollaborationPanel(props: {
         h('div', { className: 'cy9-chat-body', ref: bodyRef, role: 'log', 'aria-live': 'polite', onScroll: (event: any) => {
           const el = event.currentTarget as HTMLDivElement; followRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48
         } },
-          recentWorkgroups.length ? h('div', { className: 'cy9-workgroups' },
-            h('div', { className: 'cy9-workgroups-head' },
-              h('b', null, '持续工作组'),
-              h('span', null, '来自 host 持久档案 · 刷新页面也不会消失'),
+          recentWorkgroups.length ? h('div', { className: 'cy9-workgroups', style: WORKGROUP_STYLES.wrap },
+            h('div', { className: 'cy9-workgroups-head', style: WORKGROUP_STYLES.head },
+              h('b', { style: { color: 'var(--text)', fontSize: 11 } }, '持续工作组'),
+              h('span', { style: { fontSize: 9 } }, 'host 持久档案 · 刷新页面也不会消失'),
             ),
-            recentWorkgroups.map((group) => h('div', { key: group.id, className: `cy9-workgroup ${group.status}` },
-              h('div', { className: 'cy9-workgroup-top' },
-                h('span', { className: 'cy9-workgroup-source' }, workgroupPlatformLabel(group.origin?.platform || group.origin?.source)),
-                h('b', null, clip(group.goal, 54)),
-                h('time', null, relativeWorkTime(group.updatedAt)),
+            recentWorkgroups.map((group) => h('div', { key: group.id, className: `cy9-workgroup ${group.status}`, style: Object.assign({}, WORKGROUP_STYLES.card, group.status === 'blocked' ? { borderColor: 'rgba(255,111,134,.35)' } : {}) },
+              h('div', { className: 'cy9-workgroup-top', style: WORKGROUP_STYLES.top },
+                h('span', { className: 'cy9-workgroup-source', style: WORKGROUP_STYLES.source }, workgroupPlatformLabel(group.origin?.platform || group.origin?.source)),
+                h('b', { style: { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', fontSize: 11 } }, clip(group.goal, 54)),
+                h('time', { style: { color: 'var(--dim)', fontSize: 9 } }, relativeWorkTime(group.updatedAt)),
               ),
-              h('div', { className: 'cy9-workgroup-team' },
-                (group.participants || []).slice(0, 5).map((member) => h('span', { key: member.employeeId }, member.employeeName)),
-                h('em', null, `${group.turnCount || 0} 次员工交付 · ${group.messageCount || 0} 轮消息`),
+              h('div', { className: 'cy9-workgroup-team', style: WORKGROUP_STYLES.team },
+                (group.participants || []).slice(0, 5).map((member) => h('span', { key: member.employeeId, style: { padding: '2px 5px', borderRadius: 5, background: 'rgba(255,255,255,.05)', color: '#cbd8eb', fontSize: 9 } }, member.employeeName)),
+                h('em', { style: { marginLeft: 'auto', color: 'var(--dim)', fontSize: 9, fontStyle: 'normal' } }, `${group.turnCount || 0} 次员工交付 · ${group.messageCount || 0} 轮消息`),
               ),
-              group.lastTurn?.reply ? h('p', null, `${group.lastTurn.employeeName || '员工'}：${clip(group.lastTurn.reply, 100)}`) : null,
+              group.lastTurn?.reply ? h('p', { style: { margin: 0, color: 'var(--muted)', fontSize: 10, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' } }, `${group.lastTurn.employeeName || '员工'}：${clip(group.lastTurn.reply, 100)}`) : null,
             )),
           ) : visible.length === 0 && !runningCalls?.length && !typingStaff ? h('div', { className: 'cy9-chat-empty' }, '工作群已连接当前 DSH 会话。直接在下方输入任务，系统会按任务内容自动拉合适的员工进工作组；输入 @姓名 可以锁定指定员工。') : null,
           visible.map((message) => h(ChatMessage, { key: message.id, message, staff, onOpenThread })),
