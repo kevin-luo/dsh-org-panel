@@ -6,6 +6,8 @@ export type { OrgPanelCore } from './host-v2'
 // Work Orchestrator：root 只做不可见调度，Web / 飞书 / QQ / 微信统一进入同一套动态工作组。
 export { COMPANY_WORK_TOOL, MAX_WORKGROUP_SIZE, planWorkgroup, requestedPeers, registerWorkOrchestrator } from './collaboration/work-orchestrator'
 export type { WorkAttachment, WorkOrchestrator, WorkPlan, WorkPolicy, WorkRequest, WorkResult, WorkRoute, WorkTurn } from './collaboration/work-orchestrator'
+export { WorkSessionStore, WORK_SESSION_LIMITS, WORK_SESSION_VERSION } from './collaboration/work-session-store'
+export type { WorkSession, WorkSessionMessage, WorkSessionOrigin, WorkSessionParticipant, WorkSessionStatus, WorkSessionTurn } from './collaboration/work-session-store'
 
 // /org-panel RPC 频道。
 export { ORG_PANEL_CHANNEL, CHANNEL_REQUIRES, registerOrgPanelChannel, createDispatcher, type EndpointMap, type OrgPanelChannelHandle } from './host/org-panel-rpc'
@@ -14,7 +16,7 @@ export { writeEndpoints } from './host/org-panel-write'
 
 export { readCtxService, firstCtxService } from './runtime/ctx-service'
 
-// 持久化层。
+// 持久化员工档案。
 export { EvolutionStore } from './persistence/evolution-store'
 export { CompanyStore } from './persistence/company-store'
 export { migrateStoreFile, detectStoreVersion, refreshDerivedStatistics, STORE_LIMITS } from './persistence/migrations'
