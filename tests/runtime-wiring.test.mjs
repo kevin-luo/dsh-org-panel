@@ -104,7 +104,7 @@ function probeAdapter(manager, { platform = 'feishu', baseAdapterId = 'im' } = {
     sent,
     async inbound(over = {}) {
       serial += 1
-      deliver({
+      const pending = deliver({
         id: `msg-${serial}`, platform, adapterId: 'probe',
         conversationId: 'c_dev', conversationType: 'group',
         senderId: 'u_boss', text: '在吗', mentions: [], attachments: [],
@@ -112,7 +112,10 @@ function probeAdapter(manager, { platform = 'feishu', baseAdapterId = 'im' } = {
         createdAt: 1787000000000 + serial,
         ...over,
       })
-      await settle(60)
+      // Gateway 的 onMessage 契约现在允许返回 Promise：优先等真实 Router / 员工链路完成，
+      // 再做断言。固定 sleep(60ms) 在 200+ 用例并行时会随机把“还没处理完”误判成业务失败。
+      if (pending && typeof pending.then === 'function') await pending
+      await settle(0)
     },
   }
 }
