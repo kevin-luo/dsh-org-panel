@@ -17,8 +17,6 @@ import type { OrgPanelRpc } from './rpc'
 export function CompanyView(props: any) {
   const useSession = props?.useSession
   const inputActions = props?.inputActions
-  // client→host 的 `/org-panel` 调用器（client-v9/index.tsx 从 ctx.get('connection') 取）。
-  // 没有就是 null：所有写操作不下发，设置页照旧禁用并说明原因。
   const rpc: OrgPanelRpc | null = props?.rpc || null
   const config: OrgPanelConfig = props?.config || {}
   const staff = config.staff || []
@@ -29,7 +27,7 @@ export function CompanyView(props: any) {
   const [activeStaffId, setActiveStaffId] = useState<string | null>(null)
   const [profileId, setProfileId] = useState<string | null>(null)
   const [thread, setThread] = useState<CompanyMessage | null>(null)
-  const [chatHeight, setChatHeight] = useState(260) // 文档四十六条视觉权重：办公室仍是第一视觉，工作群约占中栏三分之一
+  const [chatHeight, setChatHeight] = useState(260)
   const [chatCollapsed, setChatCollapsed] = useState(false)
   const [zoomIdx, setZoomIdx] = useState(0)
   const [railOpen, setRailOpen] = useState(false)
@@ -37,9 +35,10 @@ export function CompanyView(props: any) {
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
-    const walkId = window.setInterval(() => setTick((value) => value + 1), 2400)
+    // tick 只允许做呼吸灯等纯装饰；员工位置与成长都不得依赖它。
+    const pulseId = window.setInterval(() => setTick((value) => value + 1), 2400)
     const clockId = window.setInterval(() => setNow(new Date()), 1000)
-    return () => { window.clearInterval(walkId); window.clearInterval(clockId) }
+    return () => { window.clearInterval(pulseId); window.clearInterval(clockId) }
   }, [])
 
   const useSessionSafe = typeof useSession === 'function' ? useSession : () => undefined
@@ -54,9 +53,7 @@ export function CompanyView(props: any) {
   const growth = useMemo(() => extractGrowthEvents(nodes, staff), [nodes, staff])
   const skills = useMemo(() => extractSkillQueue(nodes, runningCalls, staff), [nodes, runningCalls, staff])
   const plugins = useMemo(() => extractMarketPlugins(nodes), [nodes])
-  // 会话节点流 → Company Event Bus：办公室 / 右栏 / 员工档案统一从总线读实时状态。
   useSessionEventChannel(nodes, runningCalls, roles, staff)
-  // 持久化快照 hydrate + 设置中心数据，三级优先级：`/org-panel` RPC > 本 Session 快照 > 本机缓存。
   const orgPanel = useOrgPanel(nodes, rpc, settingsOpen)
   const snapshot = orgPanel.snapshot
   const typingStaff = useMemo(() => partial ? latestDirectEmployee(nodes, staff) : null, [partial, nodes, staff])
@@ -73,18 +70,8 @@ export function CompanyView(props: any) {
   }, [staff, statuses])
   const since = useMemo(() => nodes?.[0] ? nodeTime(nodes[0]) : null, [nodes])
 
-  // 全局唯一的「插入 @员工」出口：只写 DSH 官方草稿（InputActions.setDraft），再把焦点交还原生 Composer。
-  // 绝不调用 submit —— 发不发、怎么改，由老板在原生输入框里决定。
-  // focus=false 用于弹窗还开着的场景：把焦点移到弹窗背后的 textarea 会让老板以为界面卡了。
-  //
-  // 三条真机才暴露的坑，全在这里堵死（细节见 composer.ts 顶部注释）：
-  //   ① 直接 setDraft(text) 是**覆盖**：老板已经敲进去的字会被抹掉；
-  //      而且新旧文本一样时 machine 直接 return，点第二次画面上毫无反应。现在改成并进现有草稿。
-  //   ② 官方 face 万一缺席 / 抛错，原来什么都不做也什么都不说；现在退到原生 input 事件那条路。
-  //   ③ 焦点原来只挂一个 requestAnimationFrame —— 页面在后台标签页时 rAF 不触发，焦点永远不过去。
   const draftComposer = (text: string, focus = true) => {
     setChatCollapsed(false)
-    // 当前草稿从原生 textarea 只读取一次（不订阅 useInput：那会让整块面板跟着每个按键重渲染）。
     const next = joinDraft(composerTextarea()?.value || '', text)
     const route = writeDraft(inputActions, next)
     if (route === 'none' && typeof console !== 'undefined') {
@@ -96,10 +83,6 @@ export function CompanyView(props: any) {
   const toggleStaff = (staffId: string) => setActiveStaffId((current) => current === staffId ? null : staffId)
   const profileStaff = profileId ? staff.find((item) => item.id === profileId) || null : null
 
-  // 设置中心数据：真实快照 + `/org-panel` 读回来的真实台账 + 本会话真实搜索到的市场插件。
-  // 依然没有写通道的那些能力（测试连接 / 导出备份 / 渠道启停）不传 action，
-  // CompanySettings 会把按钮禁用并在 title 里说明原因，绝不假装成功。
-  // 数据来源必须上屏：降级了就说降级了，别让老板对着一屏「未知」自己猜原因。
   const sourceText = orgPanel.channel === 'offline'
     ? `${SOURCE_LABEL[orgPanel.source]} · host 未提供 /org-panel 频道，面板读不到实时台账`
     : orgPanel.source === 'none' ? undefined : SOURCE_LABEL[orgPanel.source]
@@ -110,12 +93,9 @@ export function CompanyView(props: any) {
     error: orgPanel.error,
     plugins: Object.assign({ market: plugins, channelProbing: orgPanel.channel === 'unknown' }, orgPanel.extra.plugins),
   })), [snapshot, plugins, config.companyName, sourceText, orgPanel.extra, orgPanel.loading, orgPanel.error, orgPanel.channel])
-  // 不用 useMemo：draftComposer 每次渲染都会重建，缓存住会闭包到旧的 inputActions。
   const settingsActions = buildSettingsActions({
     channel: orgPanel.channel,
     rpc,
-    // 刷新优先走 RPC；通道不通时退回「把指令写进原生 Composer 草稿」这条老路，
-    // 并如实说明为什么走了降级路径。弹窗开着，所以不抢焦点。
     refresh: async () => {
       const result = await orgPanel.refresh()
       if (result.ok) return result.message
@@ -144,7 +124,14 @@ export function CompanyView(props: any) {
         }),
       ),
       h('main', { className: 'cy9-center' },
-        h(OfficeWorld, { staff, statuses, tasksMap, tick, activeStaffId, zoomIdx, onZoom: setZoomIdx, onSelect: toggleStaff, onTalk: (employee: StaffDef) => draftComposer(`@${employee.name} `), onOpenProfile: setProfileId }),
+        h(OfficeWorld, {
+          staff, statuses, tasksMap, tick, snapshot, activeStaffId, zoomIdx,
+          onZoom: setZoomIdx,
+          onSelect: toggleStaff,
+          onTalk: (employee: StaffDef) => draftComposer(`@${employee.name} `),
+          onOpenProfile: setProfileId,
+          onTrain: (employee: StaffDef) => draftComposer(`@${employee.name} 结合你的长期记忆、最近任务履历和真实技能证据，先盘点当前能力缺口；优先复用公司已安装插件和 DSH 社区能力。提出一个最值得练习的成长任务，说明要使用的真实工具/插件、成功标准和预期沉淀的技能证据。不要为了升级虚构执行结果。`),
+        }),
         h(CollaborationPanel, {
           channels: DEFAULT_CHANNELS, channelId, onChannel: setChannelId, messages, staff, runningCalls, typingStaff, running, promptError,
           activeStaffId, onClearStaffFilter: () => setActiveStaffId(null), collapsed: chatCollapsed, onToggleCollapsed: () => setChatCollapsed((value) => !value),
