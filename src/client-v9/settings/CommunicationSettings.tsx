@@ -128,8 +128,8 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
 
     !loaded ? h('div', { className: 'cy9-set-banner' },
       data?.reason
-        ? `内置通讯 Runtime 暂未提供摘要 —— host 原话：${data.reason}。上方 dsh-im 扫码桥独立探测，不受这个状态影响。`
-        : '内置 CommunicationManager 暂未返回摘要。上方 dsh-im 是独立的 DSH 插件通道，可以照常探测和扫码。',
+        ? `面板没有拿到通讯配置摘要 —— 内置通讯 Runtime 的 host 原话：${data.reason}。上方 dsh-im 扫码桥独立探测，不受这个状态影响。`
+        : '面板没有拿到通讯配置摘要。内置 CommunicationManager 暂未返回数据；上方 dsh-im 是独立的 DSH 插件通道，可以照常探测和扫码。',
     ) : null,
 
     h(SettingsCard, {
