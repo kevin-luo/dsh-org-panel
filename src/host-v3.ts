@@ -1,11 +1,10 @@
 // 赛博公司 Host 装配入口。
 //
-// 运行时只有一条业务执行主链：
-//   channel/web input -> Work Orchestrator -> real employees -> shared workgroup -> persistence/events
+// 唯一业务主链：
+//   Web / IM -> Work Orchestrator -> Employee Runtime.dispatch -> persistence / events
 //
-// host-v2 继续承担低层 Employee Runtime / Store 实现，但它旧的“秘书 dispatcher”Prompt 与
-// staff_chat / staff_meeting 公共工具会在装配边界被物理屏蔽，不再进入真实 Tool Registry。
-import { apply as applyCore, inject as coreInject, type Employee, type OrgPanelCore } from './host-v2'
+// Employee Runtime 只负责跑某一位真实员工；所有选人、组队、动态邀请都只存在于 Work Orchestrator。
+import { apply as applyCore, type Employee, type OrgPanelCore } from './host-v2'
 import { registerCommunityMarket } from './community-market'
 import { registerWorkOrchestrator, type WorkOrchestrator } from './collaboration/work-orchestrator'
 import { installTaskSkillGrowth, type TaskSkillGrowthRuntime } from './capabilities/task-skill-growth'
@@ -19,7 +18,8 @@ import { registerOrgPanelChannel, type OrgPanelChannelHandle } from './host/org-
 import { companyEventBus } from './runtime/event-bus'
 import type { CompanyEvent } from './runtime/company-events'
 
-export const inject = coreInject
+// Host 自己需要 systemPrompt 来注册不可见调度内核规则；Employee Runtime 本身不依赖 systemPrompt。
+export const inject = ['tools', 'subagents', 'systemPrompt']
 
 export type OrgPanelHostFields = {
   core: OrgPanelCore
@@ -32,55 +32,6 @@ export type OrgPanelHostFields = {
 }
 
 export type OrgPanelHost = OrgPanelHostFields & (() => Promise<void>)
-
-const LEGACY_ROUTING_TOOLS = new Set(['staff_chat', 'staff_meeting'])
-
-function bound<T extends object>(target: T, property: PropertyKey): any {
-  const value = (target as any)[property]
-  return typeof value === 'function' ? value.bind(target) : value
-}
-
-/**
- * host-v2 仍包含历史实现代码，但真实装载时不允许它把旧协调器暴露出来。
- * 这里不是“Prompt 覆盖”：旧 dispatcher section 与两枚星型路由工具根本不会进入宿主 Registry。
- */
-function coreRuntimeContext(ctx: any): any {
-  const realTools = ctx?.tools
-  const realPrompt = ctx?.systemPrompt
-  const tools = realTools ? new Proxy(realTools, {
-    get(target, property) {
-      if (property === 'register') {
-        return (tool: any) => {
-          if (LEGACY_ROUTING_TOOLS.has(String(tool?.name || ''))) return
-          return target.register(tool)
-        }
-      }
-      return bound(target, property)
-    },
-  }) : realTools
-  const systemPrompt = realPrompt ? new Proxy(realPrompt, {
-    get(target, property) {
-      if (property === 'section') {
-        return (section: any) => {
-          if (String(section?.name || '') === 'dsh-org-panel:dispatcher') return
-          return target.section(section)
-        }
-      }
-      return bound(target, property)
-    },
-  }) : realPrompt
-
-  // 只暴露 host-v2 真正会用到的宿主服务。get 仍绑定真实 cordis Context，
-  // readCtxService 因此可以安全探测 agent / agents 等可选能力。
-  return {
-    tools,
-    subagents: ctx?.subagents,
-    systemPrompt,
-    logger: ctx?.logger,
-    get: typeof ctx?.get === 'function' ? ctx.get.bind(ctx) : undefined,
-    on: typeof ctx?.on === 'function' ? ctx.on.bind(ctx) : undefined,
-  }
-}
 
 function warn(ctx: any, layer: string, error: unknown): void {
   const detail = error instanceof Error ? error.message : String(error)
@@ -101,8 +52,8 @@ function rosterOf(employees: Employee[]): RosterEntry[] {
 }
 
 export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
-  // Employee Runtime 只负责“跑某个员工本人”。旧秘书协调器在这个边界直接被拿掉。
-  const core = applyCore(coreRuntimeContext(ctx), config)
+  // Core 已经是纯 Employee Runtime，不再需要 Proxy 屏蔽任何历史路由工具。
+  const core = applyCore(ctx, config)
   if (!core) return undefined
   registerCommunityMarket(ctx)
 
@@ -115,7 +66,6 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     warn(ctx, 'Work Orchestrator', error)
   }
 
-  // 所有工作入口最终都通过 core.dispatch 结单，因此自动成长只需要包住这一份 Store。
   let growth: TaskSkillGrowthRuntime | undefined
   try {
     growth = installTaskSkillGrowth(core.store, {
@@ -157,7 +107,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
     communication = registerCommunication(ctx, config, { events: companyEventBus })
     if (communication) {
       communication.setRoster(rosterOf(core.employees))
-      // 外部渠道不再拿 employeeId 逐个派活；整条消息直接进入同一套 Work Orchestrator。
+      // 外部渠道只负责 transport / ACL / reply；员工选择与协作全部复用同一个 Orchestrator。
       communication.setDispatcher(orchestrator ? ((request) => orchestrator!.run(request)) : null)
     }
   } catch (error) {
@@ -174,6 +124,7 @@ export function apply(ctx: any, config?: any): OrgPanelHost | undefined {
 
   const host = (async () => {
     try { await channel?.dispose() } catch {}
+    try { await communication?.stop() } catch {}
     try { growth?.dispose() } catch {}
   }) as OrgPanelHost
   host.core = core
