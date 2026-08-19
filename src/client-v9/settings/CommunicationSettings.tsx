@@ -1,19 +1,22 @@
-// 公司设置 → 通讯（需求文档二十二 / 二十五 / 三十 / 四十一）。
-// 所有外部 IM 配置统一在这一页：连接状态、群映射、默认负责人、消息路由、允许用户、权限模式、附件能力。
-// 铁律一：凭证只显示 SecretRef 与掩码（需求文档三十一），未配置的平台如实显示「未连接」。
-// 铁律二（需求文档四十八）：本页所有状态只来自 CommunicationManager.summary()。
-//   host 压根没下发摘要时，「未连接 / 未配置 / 0」都是面板自己编的结论 —— 那种情况一律显示「未知」。
+// 公司设置 → 通讯。
+//
+// 两层通讯能力统一在这里：
+// 1. DSH 生态传输层：优先复用 @xmanrui/dsh-im 的微信/QQ/飞书等成熟协议和扫码生命周期；
+// 2. org-panel 内置 CommunicationManager：继续负责兼容已有配置，并承载公司级员工路由/权限摘要。
+//
+// 员工身份、记忆、技能、履历始终属于赛博公司；IM 插件只负责把消息可靠送进 Harness。
 import { createElement as h, useState } from 'react'
 import { IM_PLATFORMS, type AdapterConnectionState, type AdapterSummary, type ChannelBinding, type CommunicationSummary, type IMPlatform } from '../../integrations/im/types'
+import type { DshImWeixinActions } from '../dsh-im-bridge'
+import { DshImWeixinSettings } from './DshImWeixinSettings'
 import { ActionButton, DASH, Empty, KeyValues, SettingsCard, SettingsRow, StatusPill, Toggle, countText, formatDateTime, type PillTone } from './styles'
 
-/** 未知 ≠ 未配置。面板读不到摘要时用它，绝不替老板宣布「没连」。 */
 const UNKNOWN = '未知'
 
 const PLATFORM_LABEL: Record<IMPlatform, { name: string; kind: string }> = {
-  feishu: { name: '飞书', kind: '企业机器人 · 长连接 / Webhook' },
-  qq: { name: 'QQ', kind: 'QQ Bot / OneBot' },
-  wechat: { name: '微信', kind: '企业微信 / Adapter' },
+  feishu: { name: '飞书', kind: '内置兼容 Adapter · 长连接 / Webhook' },
+  qq: { name: 'QQ', kind: '内置兼容 Adapter（实验）' },
+  wechat: { name: '微信', kind: '内置兼容 Adapter（实验）' },
 }
 
 const STATE_VIEW: Record<AdapterConnectionState, { tone: PillTone; label: string }> = {
@@ -29,17 +32,17 @@ const PERMISSION_LABEL: Record<string, string> = {
   'read-only': 'Read Only', 'workspace-write': 'Workspace Write', 'danger-full-access': 'Full Access',
 }
 
-/** Partial：允许 host 分批接线，缺什么就在 UI 上如实显示「未配置 / —」。 */
 export type CommunicationSettingsData = Partial<CommunicationSummary> & {
-  /** 公司频道名，用于把 companyChannelId 显示成人话；缺省时直接显示 id。 */
   channels?: Array<{ id: string; name: string }>
   employees?: Array<{ id: string; name: string }>
-  /** host 明确回答「通讯层本次没挂上」时给的真实原因。有它就原样上屏，绝不显示成「未配置」。 */
   reason?: string
   loaded?: boolean
 }
 
 export type CommunicationSettingsActions = {
+  /** 外部成熟传输：不依赖 org-panel 自己是否实现微信协议。 */
+  dshImWeixin?: DshImWeixinActions
+  /** 以下是 org-panel 内置 CommunicationManager 的兼容写入口。 */
   setEnabled?(adapterId: string, enabled: boolean): unknown | Promise<unknown>
   reconnect?(adapterId: string): unknown | Promise<unknown>
   addChannel?(platform: IMPlatform): unknown | Promise<unknown>
@@ -91,22 +94,16 @@ function AdapterDetail(props: { adapter: AdapterSummary; data?: CommunicationSet
   )
 }
 
-/** 面板到底有没有拿到 manager.summary()。没拿到时 adapters 是空数组，但那不代表「没有渠道」。 */
 export function summaryLoaded(data?: CommunicationSettingsData): boolean {
   return !!data && Array.isArray(data.adapters)
 }
 
-/**
- * 「员工之间自动转交上限」的真实生效值。
- * manager.summary().maxEmployeeHops 在一个渠道都没有时会回落到代码里的缺省常量 ——
- * 那个数字不是任何渠道真实生效的上限，必须自报家门，不能当成配置读出来的值展示。
- */
 export function describeHopLimit(data?: CommunicationSettingsData): { value: string; fallback: boolean; known: boolean } {
   const hops = data?.maxEmployeeHops
   if (!summaryLoaded(data) || typeof hops !== 'number' || !Number.isFinite(hops)) {
     return { value: `${UNKNOWN}（面板未拿到通讯摘要）`, fallback: false, known: false }
   }
-  if (!(data?.adapters || []).length) return { value: `${UNKNOWN}（尚未接入渠道，${hops} 次只是缺省回落值）`, fallback: true, known: true }
+  if (!(data?.adapters || []).length) return { value: `${UNKNOWN}（尚未接入内置渠道，${hops} 次只是缺省回落值）`, fallback: true, known: true }
   return { value: `${hops} 次（各启用渠道 routing.maxHops 的最大值）`, fallback: false, known: true }
 }
 
@@ -118,16 +115,27 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
   const [openId, setOpenId] = useState<string | null>(null)
 
   return h('div', { className: 'cy9-set-main' },
+    h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } },
+      h('div', { style: { marginRight: 'auto' } },
+        h('b', { style: { display: 'block', fontSize: 13 } }, '公司通讯中枢'),
+        h('span', { style: { color: 'var(--set-muted)', fontSize: 10 } }, '优先复用成熟 DSH IM 传输插件，赛博公司负责员工路由、长期记忆与权限。'),
+      ),
+      h(StatusPill, { tone: 'info', label: '生态优先' }),
+    ),
+
+    // 第一条真实生态融合：直接消费 dsh-im /weixin RPC，扫码、配对码和重连都不经过假 action。
+    h(DshImWeixinSettings, { actions: actions?.dshImWeixin, onConnected: onRefresh }),
+
     !loaded ? h('div', { className: 'cy9-set-banner' },
       data?.reason
-        // host 明确说了为什么拿不到：原样转述，比我们自己猜「大概是没下发」准确得多。
-        ? `面板没有拿到通讯配置摘要 —— host 的原话：${data.reason}`
-        : '面板没有拿到通讯配置摘要（host 未下发 CommunicationManager.summary()）。下面每一行的「未知」只表示面板读不到，不代表老板没有配置飞书 / QQ / 微信。',
+        ? `内置通讯 Runtime 暂未提供摘要 —— host 原话：${data.reason}。上方 dsh-im 扫码桥独立探测，不受这个状态影响。`
+        : '内置 CommunicationManager 暂未返回摘要。上方 dsh-im 是独立的 DSH 插件通道，可以照常探测和扫码。',
     ) : null,
+
     h(SettingsCard, {
-      title: '通讯渠道',
+      title: '内置通讯 Runtime（兼容层）',
       meta: loaded ? (adapters.length ? `${adapters.filter((item) => item.state === 'connected').length}/${adapters.length} 已连接` : '未配置') : '未读取',
-      note: '所有外部通讯统一配置在这里；平台只是入口，员工身份、记忆与履历在所有平台共用同一份（需求文档二十九）。',
+      note: '这部分保留现有 Feishu / QQ / WeChat Adapter 兼容能力。新接入优先走 DSH 生态插件，避免赛博公司重复维护第三方协议。',
     },
       IM_PLATFORMS.map((platform) => {
         const adapter = adapters.find((item) => item.platform === platform)
@@ -158,7 +166,7 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
                 : h(ActionButton, {
                   key: 'configure', label: '配置',
                   run: actions?.addChannel ? (() => actions.addChannel!(platform)) : undefined,
-                  hint: '当前运行时未提供渠道创建能力：请在 cordis 配置的 communication.adapters 里添加，凭证写 env:/secret: 引用',
+                  hint: '内置渠道创建尚未接线；推荐使用上方 dsh-im，或继续使用 cordis communication.adapters 兼容配置。',
                   onDone: () => onRefresh?.(),
                 }),
             ],
@@ -172,10 +180,9 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
         items: [
           { label: '员工之间自动转交上限', value: hops.value },
           { label: '群映射总数', value: loaded ? countText(data?.channelBindings?.length, ' 条') : UNKNOWN },
-          { label: '已接入渠道', value: adapters.length ? adapters.map((item) => `${PLATFORM_LABEL[item.platform]?.name || item.platform}${item.enabled ? '' : '（停用）'}`).join('、') : (loaded ? DASH : UNKNOWN) },
+          { label: '内置已接入渠道', value: adapters.length ? adapters.map((item) => `${PLATFORM_LABEL[item.platform]?.name || item.platform}${item.enabled ? '' : '（停用）'}`).join('、') : (loaded ? DASH : UNKNOWN) },
         ],
       }),
     ),
-    loaded && !adapters.length ? h('div', { className: 'cy9-set-banner info' }, '尚未接入任何外部渠道。Web 工作台本身就是一个平台入口，接入飞书 / QQ / 微信后仍然是同一批员工在干活。') : null,
   )
 }
