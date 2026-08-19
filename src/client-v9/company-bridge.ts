@@ -15,7 +15,7 @@
 // 每一级都带来源标记并上屏（SOURCE_LABEL），不允许「悄悄降级」。
 // 三者都没有 → 交出 null，各个面板显示 0 / — / 暂无 / 未知（文档四十八条），绝不编造数字。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { CompanySnapshot } from '../persistence/types'
+import type { CompanySnapshot, ModelProviderConfig } from '../persistence/types'
 import type { InstallRequest } from '../capabilities/plugin-runtime'
 import type { RoleDef, StaffDef } from './types'
 import type { CompanySettingsActions, CompanySettingsData } from './settings/CompanySettings'
@@ -155,6 +155,9 @@ export const WRITE_ENDPOINTS = {
   reject: 'plugins/reject',
   verify: 'plugins/verify',
   healthCheck: 'plugins/healthCheck',
+  modelUpsert: 'models/upsert',
+  modelRemove: 'models/remove',
+  modelSetDefault: 'models/setDefault',
   modelTest: 'models/test',
   modelSetEnabled: 'models/setEnabled',
   modelBind: 'models/bind',
@@ -661,6 +664,9 @@ export function buildSettingsActions(options: {
     healthCheck: () => orgPanelWrite(rpc, WRITE_ENDPOINTS.healthCheck, {}),
   }
   actions.models = {
+    upsert: (provider: ModelProviderConfig) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelUpsert, { provider }),
+    remove: (providerId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelRemove, { providerId }),
+    setDefault: (providerId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelSetDefault, { providerId }),
     // live 由 host 决定发不发真实请求，返回里的 checked 会如实区分；面板不许把 config-only 说成「已连通」。
     test: (providerId: string) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelTest, { providerId }),
     setEnabled: (providerId: string, enabled: boolean) => orgPanelWrite(rpc, WRITE_ENDPOINTS.modelSetEnabled, { providerId, enabled }),
@@ -668,8 +674,6 @@ export function buildSettingsActions(options: {
     bind: (employeeId: string, capability: string, providerId: string | null) =>
       orgPanelWrite(rpc, WRITE_ENDPOINTS.modelBind, { employeeId, capability, providerId: providerId || '' }),
   }
-  // setDefault 故意不给：host 侧没有对应端点，给了就是一个点下去必然报错的按钮。
-  // 模型页会把它禁用并在 title 里说明原因 —— 这正是「有 action 就能点、没有就诚实说明」的用法。
   return actions
 }
 
