@@ -20,7 +20,8 @@ export type OrgPanelDeps = {
   communication?: CommunicationManager
   config?: any
   events?: CompanyEventBus
-  dshProviders?: DshProviderRoute[]
+  /** DSH provider registry 会动态变化；传函数时每次请求都读取 live route。 */
+  dshProviders?: DshProviderRoute[] | (() => DshProviderRoute[])
 }
 
 const EVENT_PAGE_MAX = 300
@@ -68,6 +69,12 @@ function approvalPolicy(config: any): { mode: 'always' | 'preapproved' | 'none';
 export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
   const { core, orchestrator, gateway, plugins, communication, config } = deps
   const events = deps.events || companyEventBus
+  const currentDshProviders = (): DshProviderRoute[] => {
+    try {
+      const value = typeof deps.dshProviders === 'function' ? deps.dshProviders() : deps.dshProviders
+      return Array.isArray(value) ? value : []
+    } catch { return [] }
+  }
   const companySnapshot = async (payload: any) => core.snapshot({ taskLimit: Number(payload?.taskLimit) || undefined, memoryLimit: Number(payload?.memoryLimit) || undefined })
 
   const pluginApprovals = async (payload: any) => {
@@ -114,11 +121,11 @@ export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
   }
 
   const modelsProviders = async () => {
-    if (!gateway) return { available: false, providers: [], employees: [], capabilities: {}, dshProviders: deps.dshProviders || [], reason: 'Model Gateway 未挂载（详见启动日志）。' }
+    const dshRoutes = currentDshProviders()
+    if (!gateway) return { available: false, providers: [], employees: [], capabilities: {}, dshProviders: dshRoutes, reason: 'Model Gateway 未挂载（详见启动日志）。' }
     // Gateway 摘要负责协议/密钥/连通性；CompanyStore 摘要负责持久的 dshProvider 映射。两者按 id 合并。
     const [runtimeProviders, persistedProviders] = await Promise.all([gateway.providerSummaries(), core.company.modelProviderSummaries()])
     const runtimeById = new Map(runtimeProviders.map((item) => [item.id, item]))
-    const dshRoutes = deps.dshProviders || []
     const dshSet = new Set(dshRoutes.map((item) => item.id))
     const providers = persistedProviders.map((persisted) => {
       const runtime = runtimeById.get(persisted.id)
