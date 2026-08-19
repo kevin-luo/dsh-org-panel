@@ -94,11 +94,12 @@ export function writeEndpoints(deps: OrgPanelDeps): EndpointMap {
   const upsert = async (payload: any) => {
     const input = payload?.provider && typeof payload.provider === 'object' ? payload.provider : payload
     if (!input || typeof input !== 'object') throw new Error('缺少 provider 配置对象')
-    // UI 编辑表单拿到的是安全摘要，不一定包含 timeout 等非展示字段；编辑已有供应商时，
-    // “没传这个字段”表示保持原值，而不是静默清空。明确传来的字段仍然覆盖原值。
+    // UI 编辑表单拿到的是安全摘要，不一定包含 timeout 等非展示字段。undefined 表示“本次没改”，
+    // 必须在 merge 前丢掉；否则 {...existing, timeout: undefined} 会把旧超时静默清空。
     const providerId = typeof input.id === 'string' ? input.id.trim() : ''
     const existing = providerId ? (await core.company.modelProviders()).find((item) => item.id === providerId) : undefined
-    const merged = existing ? { ...existing, ...input } : input
+    const definedInput = Object.fromEntries(Object.entries(input).filter(([, value]) => value !== undefined))
+    const merged = existing ? { ...existing, ...definedInput } : definedInput
     // sanitizeModelProvider / assertNoRawSecret 在 CompanyStore 里，明文密钥会被直接拒绝。
     const provider = await core.company.upsertModelProvider(merged as ModelProviderConfig)
     return { provider }
