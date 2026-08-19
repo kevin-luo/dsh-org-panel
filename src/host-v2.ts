@@ -291,18 +291,12 @@ export function apply(ctx: any, config?: any): OrgPanelCore | undefined {
 
   const openTask = async (employee: Employee, input: StaffDispatchInput): Promise<string | null> => {
     try {
+      // 个人履历只记录员工工作本身；platform/conversation/message/sender 等通讯来源由 WorkSessionStore 持久化。
       const task = await store.startTask(employee.id, {
         title: clip(input.taskTitle || input.text, 100) || '未命名任务',
         description: input.taskDescription ? clip(input.taskDescription, 800) : undefined,
         source: input.source || 'web',
         channelId: input.channelId,
-        platform: input.platform,
-        conversationId: input.conversationId,
-        messageId: input.messageId,
-        threadId: input.threadId,
-        senderId: input.senderId,
-        senderName: input.senderName,
-        workgroupId: input.workgroupId,
         tools: [],
       })
       return task.id
