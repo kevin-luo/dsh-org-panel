@@ -132,8 +132,8 @@ export function CommunicationSettings(props: { data?: CommunicationSettingsData;
 
     !loaded ? h('div', { className: 'cy9-set-banner' },
       data?.reason
-        ? `面板没有拿到内置通讯摘要 —— host 原话：${data.reason}。上方 dsh-im Provider 是独立插件频道，不受这个状态影响。`
-        : '内置 CommunicationManager 暂未返回摘要。上方 dsh-im Provider 独立探测，可以照常扫码或绑定机器人。',
+        ? `面板没有拿到通讯配置摘要 —— host 原话：${data.reason}。上方 dsh-im Provider 是独立插件频道，不受这个状态影响。`
+        : '面板没有拿到通讯配置摘要。上方 dsh-im Provider 独立探测，可以照常扫码或绑定机器人。',
     ) : null,
 
     h(SettingsCard, {
