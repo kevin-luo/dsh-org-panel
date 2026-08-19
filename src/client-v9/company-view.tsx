@@ -10,11 +10,14 @@ import { CollaborationPanel } from './components/CollaborationPanel'
 import { RightRail } from './components/RightRail'
 import { EmployeeProfile } from './employee-profile/EmployeeProfile'
 import { CompanySettings, settingsDataFromSnapshot } from './settings/CompanySettings'
-import { buildSettingsActions, REFRESH_PROMPT, REFRESH_RESULT, SOURCE_LABEL, useOrgPanel, useSessionEventChannel } from './company-bridge'
+import { buildSettingsActions, SOURCE_LABEL, useOrgPanel, useSessionEventChannel } from './company-bridge'
 import { usePersistentGrowthRefresh } from './growth-snapshot-sync'
 import { useRecentWorkgroups } from './work-sessions'
 import { composerTextarea, joinDraft, scheduleFocus, writeDraft } from './composer'
 import type { OrgPanelRpc } from './rpc'
+
+const SNAPSHOT_REFRESH_PROMPT = '请调用 company_snapshot，返回完整实时 Company Snapshot。'
+const SNAPSHOT_REFRESH_RESULT = ' 系统会返回实时 Company Snapshot，面板将用真实持久化数据刷新。'
 
 export function CompanyView(props: any) {
   const useSession = props?.useSession
@@ -37,7 +40,6 @@ export function CompanyView(props: any) {
   const [settingsOpen, setSettingsOpen] = useState(false)
 
   useEffect(() => {
-    // tick 只允许做呼吸灯等纯装饰；员工位置与成长都不得依赖它。
     const pulseId = window.setInterval(() => setTick((value) => value + 1), 2400)
     const clockId = window.setInterval(() => setNow(new Date()), 1000)
     return () => { window.clearInterval(pulseId); window.clearInterval(clockId) }
@@ -58,7 +60,6 @@ export function CompanyView(props: any) {
   useSessionEventChannel(nodes, runningCalls, roles, staff)
   const orgPanel = useOrgPanel(nodes, rpc, settingsOpen)
   const workgroups = useRecentWorkgroups(rpc, `${messages.length}:${running ? 1 : 0}`)
-  // Company Event 负责“马上告诉 UI 技能变了”，CompanySnapshot 才是 Lv / XP / Evidence 的权威来源。
   usePersistentGrowthRefresh(orgPanel.refresh)
   const snapshot = orgPanel.snapshot
   const typingStaff = useMemo(() => partial ? latestDirectEmployee(nodes, staff) : null, [partial, nodes, staff])
@@ -79,11 +80,8 @@ export function CompanyView(props: any) {
     setChatCollapsed(false)
     const next = joinDraft(composerTextarea()?.value || '', text)
     const route = writeDraft(inputActions, next)
-    if (route === 'none' && typeof console !== 'undefined') {
-      console.warn('[dsh-org-panel] 草稿没写进去：宿主既没给 inputActions.setDraft，也没找到 [data-composer-seat] textarea')
-    }
-    if (!focus) return
-    scheduleFocus()
+    if (route === 'none' && typeof console !== 'undefined') console.warn('[dsh-org-panel] 草稿没写进去：宿主既没给 inputActions.setDraft，也没找到 [data-composer-seat] textarea')
+    if (focus) scheduleFocus()
   }
   const toggleStaff = (staffId: string) => setActiveStaffId((current) => current === staffId ? null : staffId)
   const profileStaff = profileId ? staff.find((item) => item.id === profileId) || null : null
@@ -104,8 +102,8 @@ export function CompanyView(props: any) {
     refresh: async () => {
       const result = await orgPanel.refresh()
       if (result.ok) return result.message
-      draftComposer(REFRESH_PROMPT, false)
-      return `${result.message}${REFRESH_RESULT}`
+      draftComposer(SNAPSHOT_REFRESH_PROMPT, false)
+      return `${result.message}${SNAPSHOT_REFRESH_RESULT}`
     },
     openProfile: (employeeId: string) => { setSettingsOpen(false); setProfileId(employeeId) },
   })
@@ -118,31 +116,21 @@ export function CompanyView(props: any) {
       onSettings: () => setSettingsOpen(true),
     }),
     h('div', { className: 'cy9-body' },
-      h('div', {
-        className: `cy9-left-wrap${leftOpen ? ' open' : ''}`,
-        style: leftOpen ? { transform: 'translateX(0)' } : undefined,
-      },
-        h(EmployeeList, {
-          staff, statuses, tasksMap, activeStaffId, tick,
-          onSelect: (staffId: string) => { toggleStaff(staffId); setLeftOpen(false) },
-          onMention: (employee: StaffDef) => { draftComposer(`@${employee.name} `); setLeftOpen(false) },
-        }),
+      h('div', { className: `cy9-left-wrap${leftOpen ? ' open' : ''}`, style: leftOpen ? { transform: 'translateX(0)' } : undefined },
+        h(EmployeeList, { staff, statuses, tasksMap, activeStaffId, tick, onSelect: (staffId: string) => { toggleStaff(staffId); setLeftOpen(false) }, onMention: (employee: StaffDef) => { draftComposer(`@${employee.name} `); setLeftOpen(false) } }),
       ),
       h('main', { className: 'cy9-center' },
         h(OfficeWorld, {
           staff, statuses, tasksMap, tick, snapshot, activeStaffId, zoomIdx,
-          onZoom: setZoomIdx,
-          onSelect: toggleStaff,
+          onZoom: setZoomIdx, onSelect: toggleStaff,
           onTalk: (employee: StaffDef) => draftComposer(`@${employee.name} `),
           onOpenProfile: setProfileId,
           onTrain: (employee: StaffDef) => draftComposer(`@${employee.name} 结合你的长期记忆、最近任务履历和真实技能证据，先盘点当前能力缺口；优先复用公司已安装插件和 DSH 社区能力。提出一个最值得练习的成长任务，说明要使用的真实工具/插件、成功标准和预期沉淀的技能证据。不要为了升级虚构执行结果。`),
         }),
         h(CollaborationPanel, {
-          channels: DEFAULT_CHANNELS, channelId, onChannel: setChannelId, messages, staff, runningCalls, typingStaff, running, promptError,
-          workgroups,
+          channels: DEFAULT_CHANNELS, channelId, onChannel: setChannelId, messages, staff, runningCalls, typingStaff, running, promptError, workgroups,
           activeStaffId, onClearStaffFilter: () => setActiveStaffId(null), collapsed: chatCollapsed, onToggleCollapsed: () => setChatCollapsed((value) => !value),
-          height: chatHeight, onHeight: setChatHeight,
-          thread, onOpenThread: setThread, onCloseThread: () => setThread(null),
+          height: chatHeight, onHeight: setChatHeight, thread, onOpenThread: setThread, onCloseThread: () => setThread(null),
         }),
       ),
       h(RightRail, { staff, stats, delegations, growth, skills, plugins, sessionRunning: running, now: now.getTime(), open: railOpen, onClose: () => setRailOpen(false), onDraft: draftComposer, onOpenProfile: setProfileId }),
