@@ -1,7 +1,7 @@
 // @xmanrui/dsh-im 可选桥回归：
 // - 不 import 第三方包，只走 DSH connection.rpc；
-// - /weixin 状态与扫码响应按 public contract 归一化；
-// - verify / delete 等敏感动作必须发送精确 payload；
+// - 微信 / QQ / 飞书统一归一成同一个 Provider contract；
+// - 扫码、手动凭证、verify / delete 等敏感动作必须发送精确 payload；
 // - 第三方频道不存在不能被伪装成“未配置”。
 import test from 'node:test'
 import assert from 'node:assert/strict'
@@ -104,6 +104,87 @@ test('dsh-im Weixin: 扫码/配对码/删除 payload 与公开 RPC 契约一致'
   assert.deepEqual(calls[2], { channel: '/weixin', endpoint: 'bot.delete', payload: { botId: 'wx-1', confirm: true } })
 })
 
+test('dsh-im QQ: 扫码 + 手动凭证共用统一 Provider，并严格走 /qq', async () => {
+  const calls = []
+  const rpc = {
+    async call(channel, endpoint, payload) {
+      calls.push({ channel, endpoint, payload })
+      if (endpoint === 'provision.begin') return { ok: true, value: {
+        attemptId: 'qq-attempt', status: 'refreshing', expiresAt: Date.now() + 60_000,
+        pollIntervalMs: 1200, qrCodeDataUrl: 'data:image/png;base64,AAAA',
+      } }
+      if (endpoint === 'bot.bind-credentials') return { ok: true, value: {
+        revision: 2,
+        bots: [{ botId: 'qq-1', connected: true, state: 'connected', bot: { name: 'QQ机器人', appIdMasked: '12***89' }, health: { summary: '正常' } }],
+        totals: { configured: 1, connected: 1 },
+      } }
+      return { ok: true, value: {} }
+    },
+  }
+  const actions = Bridge.createDshImChannelActions(rpc, 'qq')
+  const started = await actions.begin()
+  assert.equal(started.status, 'pending', 'QQ refreshing 属于继续等待二维码，不得显示失败')
+  const connected = await actions.bindCredentials('123456', 'top-secret')
+  assert.equal(connected.connected, 1)
+  assert.equal(connected.accounts[0].name, 'QQ机器人')
+  assert.deepEqual(calls[0], { channel: '/qq', endpoint: 'provision.begin', payload: { locale: 'zh-CN' } })
+  assert.deepEqual(calls[1], { channel: '/qq', endpoint: 'bot.bind-credentials', payload: { appId: '123456', appSecret: 'top-secret' } })
+})
+
+test('dsh-im Feishu: connection.status 的二维码没有 status 字段时使用外层 provisioning 状态', () => {
+  const status = Bridge.normalizeDshImStatus('feishu', {
+    state: 'provisioning',
+    revision: 3,
+    bots: [], totals: { configured: 0, connected: 0 },
+    provisioning: {
+      attemptId: 'fs-attempt',
+      qrCodeDataUrl: 'data:image/png;base64,AAAA',
+      verificationUrl: 'https://open.feishu.cn/example',
+      expiresAt: Date.now() + 60_000,
+      pollIntervalMs: 1800,
+    },
+  })
+  assert.equal(status.provisioning.status, 'pending')
+  assert.equal(status.provisioning.attemptId, 'fs-attempt')
+})
+
+test('dsh-im Feishu: 扫码和已有 App 凭证端点与公开 contract 一致', async () => {
+  const calls = []
+  const rpc = {
+    async call(channel, endpoint, payload) {
+      calls.push({ channel, endpoint, payload })
+      if (endpoint === 'provision.begin') return { ok: true, value: {
+        status: 'pending', provisioning: {
+          attemptId: 'fs-attempt', qrCodeDataUrl: 'data:image/png;base64,AAAA', expiresAt: Date.now() + 60_000, pollIntervalMs: 1800,
+        },
+      } }
+      if (endpoint === 'bot.bind-credentials') return { ok: true, value: {
+        state: 'connected', connected: true, configured: true,
+        botId: 'legacy-default', bot: { name: '飞书机器人', appIdMasked: 'cli_***' }, health: { summary: '长连接运行正常' },
+      } }
+      return { ok: true, value: {} }
+    },
+  }
+  const actions = Bridge.createDshImChannelActions(rpc, 'feishu')
+  assert.equal((await actions.begin()).status, 'pending')
+  const bound = await actions.bindCredentials('cli_123', 'secret-value')
+  assert.equal(bound.connected, 1)
+  assert.deepEqual(calls[0], { channel: '/feishu', endpoint: 'provision.begin', payload: { locale: 'zh-CN' } })
+  assert.deepEqual(calls[1], { channel: '/feishu', endpoint: 'bot.bind-credentials', payload: { appId: 'cli_123', appSecret: 'secret-value' } })
+})
+
+test('dsh-im: root.snapshot 形状也能归一化，兼容 QQ public client contract', () => {
+  const result = Bridge.normalizeDshImStatus('qq', {
+    snapshot: {
+      revision: 9,
+      bots: [{ botId: 'qq-9', connected: false, state: 'offline', bot: { name: 'QQ九号' }, health: { summary: '离线' } }],
+      totals: { configured: 1, connected: 0 },
+    },
+  })
+  assert.equal(result.configured, 1)
+  assert.equal(result.accounts[0].botId, 'qq-9')
+})
+
 test('dsh-im Weixin: 第三方频道不存在时返回 unavailable，不伪造成 0 个账号', async () => {
   const rpc = { async call() { throw new Error('HTTP 404') } }
   const outcome = await Bridge.probeDshIm(rpc, 'weixin')
@@ -116,5 +197,13 @@ test('dsh-im Weixin: 非法配对码在发 RPC 前被拒绝', async () => {
   const rpc = { async call() { called = true; return { ok: true, value: {} } } }
   const actions = Bridge.createDshImWeixinActions(rpc)
   await assert.rejects(() => actions.verify('attempt-1', '12ab'), /4～8/)
+  assert.equal(called, false)
+})
+
+test('dsh-im: 工作区必须是绝对路径，非法值不得发 RPC', async () => {
+  let called = false
+  const rpc = { async call() { called = true; return { ok: true, value: {} } } }
+  const actions = Bridge.createDshImChannelActions(rpc, 'qq')
+  await assert.rejects(() => actions.setWorkspace('qq-1', 'relative/project'), /绝对路径/)
   assert.equal(called, false)
 })
