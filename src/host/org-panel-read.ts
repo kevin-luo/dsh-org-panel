@@ -3,6 +3,7 @@
 import { readdir, stat } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type { OrgPanelCore } from '../host-v2'
+import type { WorkOrchestrator } from '../collaboration/work-orchestrator'
 import type { PluginRuntimeHandle } from '../capabilities/plugin-runtime'
 import type { CommunicationManager } from '../integrations/im/manager'
 import type { ModelGateway } from '../models/gateway'
@@ -12,6 +13,7 @@ import type { EndpointMap } from './org-panel-rpc'
 
 export type OrgPanelDeps = {
   core: OrgPanelCore
+  orchestrator?: WorkOrchestrator
   gateway?: ModelGateway
   plugins?: PluginRuntimeHandle | null
   communication?: CommunicationManager
@@ -70,7 +72,7 @@ function approvalPolicy(config: any): { mode: 'always' | 'preapproved' | 'none';
 }
 
 export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
-  const { core, gateway, plugins, communication, config } = deps
+  const { core, orchestrator, gateway, plugins, communication, config } = deps
   const events = deps.events || companyEventBus
 
   const companySnapshot = async (payload: any) => core.snapshot({ taskLimit: Number(payload?.taskLimit) || undefined, memoryLimit: Number(payload?.memoryLimit) || undefined })
@@ -101,6 +103,36 @@ export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
       timeline: communication.timeline(Math.min(Math.max(Number(payload?.timeline) || 20, 1), 50)),
       employees: core.roster.map((item) => ({ id: item.id, name: item.name })),
     }
+  }
+
+  const workSessions = async (payload: any) => {
+    if (!orchestrator) return { available: false, sessions: [], reason: 'Work Orchestrator 未挂载，本次运行没有可读取的工作组。' }
+    const rows = await orchestrator.sessions.recent(Math.min(Math.max(Number(payload?.limit) || 20, 1), 50))
+    return {
+      available: true,
+      sessions: rows.map((session) => ({
+        id: session.id,
+        key: session.key,
+        goal: session.goal,
+        status: session.status,
+        origin: session.origin,
+        participants: session.participants,
+        messageCount: session.messages.length,
+        turnCount: session.turns.length,
+        lastTurn: session.turns.length ? session.turns[session.turns.length - 1] : undefined,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+      })),
+    }
+  }
+
+  const workSession = async (payload: any) => {
+    if (!orchestrator) return { available: false, reason: 'Work Orchestrator 未挂载。' }
+    const id = String(payload?.id || '').trim()
+    const key = String(payload?.key || '').trim()
+    if (!id && !key) return { available: false, reason: 'work/session 需要 id 或 key。' }
+    const session = id ? await orchestrator.sessions.get(id) : await orchestrator.sessions.getByKey(key)
+    return session ? { available: true, session } : { available: false, reason: '没有找到这个工作组。' }
   }
 
   const securityPolicy = async () => {
@@ -141,6 +173,7 @@ export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
     const dataDir = dirname(memoryFile)
     const rows = await Promise.all([
       fileEntry('evolution', '员工档案 / 记忆 / 技能 / 履历', memoryFile),
+      fileEntry('work-sessions', '持久工作组 / 跨渠道协作上下文', orchestrator?.sessions.filePath),
       fileEntry('company', '公司档案 / 模型供应商', companyFile),
       fileEntry('approvals', '插件安装审批台账', plugins?.approvalsFile),
       fileEntry('secrets', '本地密钥库（只显示路径，不显示内容）', config?.secretsFile || join(dataDir, 'secrets.json')),
@@ -166,6 +199,8 @@ export function readEndpoints(deps: OrgPanelDeps): EndpointMap {
   const map: EndpointMap = {
     'events/since': eventsSince,
     'company/snapshot': companySnapshot,
+    'work/sessions': workSessions,
+    'work/session': workSession,
     'plugins/approvals': pluginApprovals,
     'plugins/health': pluginHealth,
     'communication/summary': communicationSummary,
