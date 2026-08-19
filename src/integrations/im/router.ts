@@ -68,8 +68,11 @@ export class CompanyRouter {
     return this.roster.find((item) => item.id === employeeId)
   }
 
-  /** Gateway 回调入口：同一会话内串行处理，保证消息顺序。 */
-  handle(message: ExternalMessage): void {
+  /**
+   * Gateway 回调入口：同一会话内串行处理，保证消息顺序。
+   * 返回这一条消息对应的真实队列 Promise，让 Adapter / Gateway 可以等到 Router、员工运行时和回信都完成。
+   */
+  handle(message: ExternalMessage): Promise<void> {
     const key = `${message.adapterId}:${message.conversationId}`
     const previous = this.queues.get(key) || Promise.resolve()
     const next = previous.then(() => this.process(message)).catch((error) => {
@@ -77,6 +80,7 @@ export class CompanyRouter {
     })
     this.queues.set(key, next)
     void next.then(() => { if (this.queues.get(key) === next) this.queues.delete(key) })
+    return next
   }
 
   /**
