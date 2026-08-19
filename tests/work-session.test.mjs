@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { join } from 'node:path'
-import { writeFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { scratch } from './_helpers.mjs'
 import { WorkSessionStore, registerWorkOrchestrator } from '../lib/index.js'
 
@@ -30,6 +30,8 @@ test('WorkSessionStore: 来源、消息、参与者和员工 turn 重启后完�
   const row = await reopened.getByKey('qq:c_dev:thread-1')
   assert.ok(row)
   assert.equal(row.id, session.id)
+  assert.equal(row.goal, '修复登录问题')
+  assert.equal(row.currentTask, '修复登录问题')
   assert.equal(row.origin.platform, 'qq')
   assert.equal(row.origin.conversationId, 'c_dev')
   assert.equal(row.origin.threadId, 'thread-1')
@@ -38,6 +40,26 @@ test('WorkSessionStore: 来源、消息、参与者和员工 turn 重启后完�
   assert.equal(row.participants[0].employeeId, 'developer')
   assert.equal(row.turns[0].taskId, 'task-1')
   assert.deepEqual(row.turns[0].tools, ['grep', 'edit'])
+})
+
+test('WorkSessionStore: 后续轮次只更新 currentTask，不覆盖成立目标和已有来源字段', async () => {
+  const dir = await scratch('work-session-stable-origin')
+  const store = new WorkSessionStore(join(dir, 'work-sessions.json'))
+  const first = await store.open({
+    key: 'feishu:chat-1:thread-8', goal: '做一次产品发布', source: 'feishu', platform: 'feishu', channelId: 'growth',
+    conversationId: 'chat-1', threadId: 'thread-8', senderId: 'boss-1', senderName: '老板', messageId: 'm1', messageText: '做一次产品发布',
+  })
+  const second = await store.open({
+    key: 'feishu:chat-1:thread-8', goal: '继续补发布后的数据复盘', source: 'feishu', platform: 'feishu',
+    conversationId: 'chat-1', messageId: 'm2', messageText: '继续补发布后的数据复盘',
+  })
+  assert.equal(second.id, first.id)
+  assert.equal(second.goal, '做一次产品发布')
+  assert.equal(second.currentTask, '继续补发布后的数据复盘')
+  assert.equal(second.origin.channelId, 'growth')
+  assert.equal(second.origin.threadId, 'thread-8')
+  assert.equal(second.origin.senderId, 'boss-1')
+  assert.equal(second.origin.senderName, '老板')
 })
 
 test('WorkSessionStore: 同一平台 messageId 重投不复制老板消息', async () => {
@@ -79,16 +101,21 @@ test('Work Orchestrator: 同一会话跨轮复用稳定 teamId，第二轮看到
   assert.doesNotMatch(dispatches[1].taskTitle, /赛博公司持久工作组/)
 
   const session = await orchestrator.sessions.get(first.teamId)
+  assert.equal(session.goal, '@小刘 修复登录 bug')
+  assert.equal(session.currentTask, '继续把边界情况补完')
   assert.equal(session.messages.length, 2)
   assert.equal(session.turns.length, 2)
   assert.deepEqual(session.turns.map((item) => item.taskId), ['task-1', 'task-2'])
 })
 
-test('WorkSessionStore: 文件损坏时 fail-closed，不用空文件覆盖历史', async () => {
+test('WorkSessionStore: 文件损坏时先保留原文备份再 fail-closed', async () => {
   const dir = await scratch('work-session-corrupt')
   const file = join(dir, 'work-sessions.json')
   const raw = '{"version":1,"sessions":{"qq:c1":'
   await writeFile(file, raw, 'utf-8')
   const store = new WorkSessionStore(file)
   await assert.rejects(() => store.open({ key: 'qq:c1:main', goal: '新任务', source: 'qq', platform: 'qq', conversationId: 'c1' }), /拒绝写入/)
+  assert.ok(store.corruptBackupPath)
+  assert.equal(await readFile(store.corruptBackupPath, 'utf-8'), raw)
+  assert.equal(await readFile(file, 'utf-8'), raw, '损坏原文件必须保持原样')
 })
