@@ -7,6 +7,7 @@ import type { EmployeeRuntimeState } from '../../runtime/company-events'
 import { EMPLOYEE_RUNTIME_LABEL, STATION_LABEL } from '../../runtime/company-events'
 import type { EmployeeGameState } from '../game/company-game'
 import { AssetImage } from './AssetImage'
+import { SkillGrowthBurst } from './SkillGrowthBurst'
 
 const BADGE: Partial<Record<EmployeeStatus, string>> = { thinking: '•••', blocked: '!', done: '✓' }
 
@@ -55,8 +56,9 @@ export function EmployeeSprite(props: {
   const growthLine = growth
     ? `Lv.${growth.level} ${growth.title} · ${growth.workspaceTier}${growth.topSkill ? ` · ${growth.topSkill.name} Lv.${growth.topSkill.level}` : ''}`
     : '成长档案尚未从 Host 读取'
-  // 只有 reducer 的最后真实事件就是 skill.updated 时才亮“技能↑”，tick 不参与判断。
-  const skillUp = !!runtime?.lastSkill && runtime.lastSkill.at === runtime.updatedAt
+  // 只有 reducer 的最后真实事件就是 skill.updated 才播放成长反馈；tick 不参与判断。
+  // 文案不写死“升级”：插件证据更新也会发 skill.updated，而自动任务成长只有真正跨级才会发该事件。
+  const skillEvent = runtime?.lastSkill && runtime.lastSkill.at === runtime.updatedAt ? runtime.lastSkill : null
 
   return h('button', {
     type: 'button', className: `cy9-sprite ${status}${active ? ' active' : ''}`,
@@ -75,14 +77,7 @@ export function EmployeeSprite(props: {
           color: '#a9efff', fontSize: 9, fontWeight: 800, lineHeight: '14px', textAlign: 'center',
         },
       }, `L${growth.level}`) : null,
-      skillUp ? h('span', {
-        title: `真实技能证据触发：${runtime!.lastSkill!.name}${runtime!.lastSkill!.level ? ` Lv.${runtime!.lastSkill!.level}` : ''}`,
-        style: {
-          position: 'absolute', right: -18, top: -10, zIndex: 5, padding: '1px 5px', borderRadius: 999,
-          border: '1px solid rgba(126,255,170,.65)', background: 'rgba(14,52,31,.94)', color: '#bfffd1',
-          fontSize: 8, fontWeight: 800, lineHeight: '14px', whiteSpace: 'nowrap',
-        },
-      }, '技能↑') : null,
+      skillEvent ? h(SkillGrowthBurst, { key: `${skillEvent.at}:${skillEvent.name}:${skillEvent.level || 0}`, skill: skillEvent }) : null,
       h(AssetImage, { src: staffSprite(staff.id), alt: staff.name, fallback: staff.name }),
       status === 'working' ? h('i', { className: 'cy9-monitor-glow', style: { opacity: glowOpacity(pulse) } }) : null,
     ),
