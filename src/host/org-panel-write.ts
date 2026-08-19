@@ -86,7 +86,7 @@ export function writeEndpoints(deps: OrgPanelDeps): EndpointMap {
   }
 
   // -------------------------------------------------------------------------
-  // 模型供应商：新增 / 改开关 / 测连接 / 绑定到员工
+  // 模型供应商：CRUD / 默认顺序 / 测连接 / 绑定到员工
   // 写的是同一份 company.json / evolution.json（复用 core 的实例，不新起写入者）。
   // -------------------------------------------------------------------------
   // 写的是 core.company —— host-v3 传给 Model Gateway 的同一个 CompanyStore 实例。
@@ -96,6 +96,25 @@ export function writeEndpoints(deps: OrgPanelDeps): EndpointMap {
     if (!input || typeof input !== 'object') throw new Error('缺少 provider 配置对象')
     // sanitizeModelProvider / assertNoRawSecret 在 CompanyStore 里，明文密钥会被直接拒绝。
     const provider = await core.company.upsertModelProvider(input as ModelProviderConfig)
+    return { provider }
+  }
+
+  const remove = async (payload: any) => {
+    const providerId = requireText(payload, 'providerId')
+    const removed = await core.company.removeModelProvider(providerId)
+    if (!removed) throw new Error(`未知的模型供应商：${providerId}`)
+    // 员工的 ModelBinding 故意不在这里级联删除：绑定会在 Router 里变成 missing，
+    // 员工档案仍然能解释“以前绑定过什么、为什么现在不可用”。
+    return { removed: true, providerId }
+  }
+
+  const setDefault = async (payload: any) => {
+    const providerId = requireText(payload, 'providerId')
+    const list = await core.company.modelProviders()
+    const current = list.find((item) => item.id === providerId)
+    if (!current) throw new Error(`未知的模型供应商：${providerId}`)
+    if (!current.enabled) throw new Error(`供应商 ${providerId} 当前已禁用，不能设为默认；请先启用。`)
+    const provider = await core.company.setDefaultModelProvider(providerId)
     return { provider }
   }
 
@@ -142,6 +161,8 @@ export function writeEndpoints(deps: OrgPanelDeps): EndpointMap {
     'plugins/verify': verify,
     'plugins/healthCheck': healthCheck,
     'models/upsert': upsert,
+    'models/remove': remove,
+    'models/setDefault': setDefault,
     'models/setEnabled': setEnabled,
     'models/test': test,
     'models/bind': bind,
@@ -151,6 +172,8 @@ export function writeEndpoints(deps: OrgPanelDeps): EndpointMap {
   map['plugin/reject'] = reject
   map['plugin/verify'] = verify
   map['model/upsert'] = upsert
+  map['model/remove'] = remove
+  map['model/setDefault'] = setDefault
   map['model/test'] = test
   map['model/bind'] = bind
   return map
