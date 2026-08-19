@@ -14,6 +14,10 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      # 临时安全迁移步骤：由真实 npm registry 生成 0.35.3 的 lock diff；
+      # lock 提交回仓库后立即删除这一段，恢复纯 npm ci。
+      - run: npm install --package-lock-only --ignore-scripts --save-dev sharp@0.35.3
+      - run: git diff -- package.json package-lock.json
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run typecheck
