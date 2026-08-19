@@ -87,6 +87,7 @@ function draftOf(row: ModelProviderRow): ProviderDraft {
     model: row.model,
     baseUrl: row.baseUrl || '',
     apiKeyRef: row.apiKeyRef ? String(row.apiKeyRef) : '',
+    // 安全摘要当前不下发 timeout；编辑时留空，由 host 保留原值，避免一次普通编辑把隐藏配置抹掉。
     timeout: '',
     enabled: row.enabled,
   }
@@ -109,7 +110,7 @@ function providerOf(draft: ProviderDraft): ModelProviderConfig {
     model,
     baseUrl: baseUrl || undefined,
     apiKeyRef: apiKeyRef ? apiKeyRef as ModelProviderConfig['apiKeyRef'] : undefined,
-    timeout: Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined,
+    timeout: draft.timeout.trim() && Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined,
     enabled: draft.enabled,
   }
 }
@@ -137,7 +138,7 @@ function testMessage(value: unknown): string {
   return '连接成功'
 }
 
-function FormField(props: { label: string; hint?: string; children: any }) {
+function FormField(props: { label: string; hint?: string; children?: any }) {
   return h('label', { style: { display: 'flex', flexDirection: 'column', gap: 5, minWidth: 0, color: 'var(--set-muted)', fontSize: 10 } },
     h('span', null, props.label),
     props.children,
@@ -188,8 +189,11 @@ function ProviderEditor(props: {
       }, VENDORS.map((vendor) => h('option', { key: vendor.value, value: vendor.value }, vendor.label)))),
       h(FormField, { label: '模型名称', hint: '填写供应商真实模型 ID，不在前端写死默认模型。' }, input('model', 'gpt-5 / gemini-...')),
       h(FormField, { label: 'Base URL', hint: 'OpenAI Compatible / Custom 通常需要；Gemini 可按部署配置填写。' }, input('baseUrl', 'https://api.example.com/v1')),
-      h(FormField, { label: 'API Key 引用', hint: '只接受 env: / secret:；可留空用于无需密钥的本地服务。' }, input('apiKeyRef', 'env:OPENAI_API_KEY')),
-      h(FormField, { label: '超时（ms）' }, input('timeout', '45000')),
+      h(FormField, {
+        label: 'API Key 引用',
+        hint: editing ? '留空表示保持当前引用；填写新 env:/secret: 会替换。当前版本清空旧引用请通过配置文件完成。' : '只接受 env: / secret:；可留空用于无需密钥的本地服务。',
+      }, input('apiKeyRef', 'env:OPENAI_API_KEY')),
+      h(FormField, { label: '超时（ms）', hint: editing ? '留空表示保持原超时；填写数字会更新。' : undefined }, input('timeout', '45000')),
       h(FormField, { label: '启用状态' }, h('button', {
         type: 'button', className: `cy9-set-toggle${draft.enabled ? ' on' : ''}`, onClick: () => patch('enabled', !draft.enabled),
         style: { alignSelf: 'flex-start' },
