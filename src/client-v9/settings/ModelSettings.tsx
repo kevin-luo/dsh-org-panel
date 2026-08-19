@@ -155,7 +155,7 @@ function ProviderEditor(props: {
 }) {
   const editing = !!props.row
   const [draft, setDraft] = useState<ProviderDraft>(() => props.row ? draftOf(props.row) : emptyDraft(props.initialType))
-  const patch = <K extends keyof ProviderDraft>(key: K, value: ProviderDraft[K]) => setDraft((current) => ({ ...current, [key]: value }))
+  const patch = <K extends keyof ProviderDraft,>(key: K, value: ProviderDraft[K]) => setDraft((current) => ({ ...current, [key]: value }))
   const input = (key: keyof ProviderDraft, placeholder = '', disabled = false) => h('input', {
     className: 'cy9-set-input', value: String(draft[key] ?? ''), placeholder, disabled,
     onChange: (event: any) => patch(key as any, String(event?.target?.value ?? '') as any),
