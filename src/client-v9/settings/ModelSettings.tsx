@@ -53,7 +53,7 @@ type ProviderDraft = {
   timeout: string
   enabled: boolean
 }
-function emptyDraft(type: ModelProviderType = 'text'): ProviderDraft { return { id: '', type, provider: 'openai-compatible', model: '', dshProvider: '', baseUrl: '', apiKeyRef: '', timeout: '45000', enabled: true } }
+function emptyDraft(type: ModelProviderType = 'text'): ProviderDraft { return { id: '', type, provider: type === 'text' ? 'custom' : 'openai-compatible', model: '', dshProvider: '', baseUrl: '', apiKeyRef: '', timeout: '45000', enabled: true } }
 function draftOf(row: ModelProviderRow): ProviderDraft { return { id: row.id, type: row.type, provider: row.provider, model: row.model, dshProvider: row.dshProvider || '', baseUrl: row.baseUrl || '', apiKeyRef: row.apiKeyRef ? String(row.apiKeyRef) : '', timeout: '', enabled: row.enabled } }
 function providerOf(draft: ProviderDraft): ModelProviderConfig {
   const id = draft.id.trim(), model = draft.model.trim(), dshProvider = draft.dshProvider.trim(), baseUrl = draft.baseUrl.trim(), apiKeyRef = draft.apiKeyRef.trim()
@@ -63,7 +63,7 @@ function providerOf(draft: ProviderDraft): ModelProviderConfig {
   if (draft.type === 'text' && !dshProvider) throw new Error('文本模型必须选择/填写一个真实 DSH Provider Route')
   if (apiKeyRef && !/^(env|secret):.+/.test(apiKeyRef)) throw new Error('API Key 只能填写 env:XXX 或 secret:XXX 引用，不能填明文密钥')
   const timeout = Number(draft.timeout)
-  return { id, type: draft.type, provider: draft.provider, model, dshProvider: draft.type === 'text' ? dshProvider : undefined, baseUrl: baseUrl || undefined, apiKeyRef: apiKeyRef ? apiKeyRef as ModelProviderConfig['apiKeyRef'] : undefined, timeout: draft.timeout.trim() && Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined, enabled: draft.enabled }
+  return { id, type: draft.type, provider: draft.type === 'text' ? 'custom' : draft.provider, model, dshProvider: draft.type === 'text' ? dshProvider : undefined, baseUrl: draft.type === 'text' ? undefined : (baseUrl || undefined), apiKeyRef: draft.type === 'text' ? undefined : (apiKeyRef ? apiKeyRef as ModelProviderConfig['apiKeyRef'] : undefined), timeout: draft.type === 'text' ? undefined : (draft.timeout.trim() && Number.isFinite(timeout) && timeout > 0 ? Math.floor(timeout) : undefined), enabled: draft.enabled }
 }
 
 function providerState(row: ModelProviderRow): { tone: PillTone; label: string; title?: string } {
@@ -109,8 +109,8 @@ function ProviderEditor(props: { row?: ModelProviderRow; initialType?: ModelProv
     note: draft.type === 'text' ? '文本员工模型由 DSH 自己管理凭证；这里的 DSH Provider Route 会真实传入 subagents.start(...agentOptions)。' : 'API Key 只填写 SecretRef，例如 env:OPENAI_API_KEY 或 secret:model-main；完整密钥不会写进 company.json。',
   }, h('div', { style: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(220px,1fr))', gap: 10, padding: 12 } },
     h(FormField, { label: '供应商 ID', hint: editing ? 'ID 用于员工绑定，编辑时不可修改。' : '这是公司内部稳定 ID。' }, input('id', 'coder-main', editing)),
-    h(FormField, { label: '能力类型' }, h('select', { className: 'cy9-set-select', value: draft.type, disabled: editing, onChange: (event: any) => patch('type', String(event?.target?.value || 'text') as ModelProviderType), style: { width: '100%', height: 32 } }, GROUPS.map((group) => h('option', { key: group.type, value: group.type }, group.label)))),
-    h(FormField, { label: '协议' }, h('select', { className: 'cy9-set-select', value: draft.provider, onChange: (event: any) => patch('provider', String(event?.target?.value || 'openai-compatible') as ModelProviderVendor), style: { width: '100%', height: 32 } }, VENDORS.map((vendor) => h('option', { key: vendor.value, value: vendor.value }, vendor.label)))),
+    h(FormField, { label: '能力类型' }, h('select', { className: 'cy9-set-select', value: draft.type, disabled: editing, onChange: (event: any) => { const next = String(event?.target?.value || 'text') as ModelProviderType; setDraft((current) => ({ ...current, type: next, provider: next === 'text' ? 'custom' : current.provider })) }, style: { width: '100%', height: 32 } }, GROUPS.map((group) => h('option', { key: group.type, value: group.type }, group.label)))),
+    draft.type !== 'text' ? h(FormField, { label: '协议' }, h('select', { className: 'cy9-set-select', value: draft.provider, onChange: (event: any) => patch('provider', String(event?.target?.value || 'openai-compatible') as ModelProviderVendor), style: { width: '100%', height: 32 } }, VENDORS.map((vendor) => h('option', { key: vendor.value, value: vendor.value }, vendor.label)))) : null,
     h(FormField, { label: '模型名称', hint: draft.type === 'text' ? '真实传给 DSH agentOptions.model。' : '填写供应商真实模型 ID。' }, input('model', 'gpt-5.6 / deepseek-...')),
     draft.type === 'text' ? h(FormField, { label: 'DSH Provider Route', hint: routeHint }, dshProviders.length ? h('select', { className: 'cy9-set-select', value: draft.dshProvider, onChange: (event: any) => patch('dshProvider', String(event?.target?.value || '')), style: { width: '100%', height: 32 } }, [h('option', { key: '', value: '' }, '请选择真实 DSH route'), ...dshProviders.map((route) => h('option', { key: route.id, value: route.id }, `${route.id}${route.name && route.name !== route.id ? ` · ${route.name}` : ''}`))]) : input('dshProvider', '例如 deepseek / openai')) : null,
     draft.type !== 'text' ? h(FormField, { label: 'Base URL', hint: 'OpenAI Compatible / Custom 通常需要。' }, input('baseUrl', 'https://api.example.com/v1')) : null,
@@ -144,7 +144,7 @@ export function ModelSettings(props: { data?: ModelSettingsData; actions?: Model
   return h('div', { className: 'cy9-set-main' },
     h('div', { style: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' } }, h('div', { style: { marginRight: 'auto' } }, h('b', { style: { display: 'block', fontSize: 13 } }, '公司模型能力'), h('span', { style: { color: 'var(--set-muted)', fontSize: 10 } }, '文本模型真实路由到 DSH 子代理；视觉/生成能力继续走公司 Model Gateway。')), h('button', { type: 'button', className: 'cy9-set-btn primary', disabled: !actions?.upsert, title: actions?.upsert ? '添加模型供应商' : '当前 /org-panel 通道没有模型写入能力', onClick: () => setEditor({ type: 'text' }) }, '+ 添加模型')),
     data?.reason ? h('div', { className: 'cy9-set-banner' }, `面板没有拿到模型供应商清单 —— host 的原话：${data.reason}`) : null,
-    !data?.reason && data?.loaded && !providers.length ? h('div', { className: 'cy9-set-banner info' }, '公司还没有模型供应商。现在可以直接点击“添加模型”完成配置。') : null,
+    !data?.reason && data?.loaded && !providers.length ? h('div', { className: 'cy9-set-banner info' }, '公司还没有模型供应商。点击“添加模型”即可完成配置，不需要手动编辑 company.json。') : null,
     editor ? h(ProviderEditor, { key: editor.row?.id || `new-${editor.type || 'text'}`, row: editor.row, initialType: editor.type, dshProviders, upsert: actions?.upsert, onClose: () => setEditor(null), onSaved: onRefresh }) : null,
     GROUPS.map((group) => {
       const rows = grouped.get(group.type) || [], capability = CAPABILITY_OF_TYPE[group.type], status = data?.capabilities?.[capability]
