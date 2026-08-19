@@ -5,11 +5,12 @@ import { staffSprite } from '../asset-map'
 import { clip } from '../selectors'
 import type { EmployeeRuntimeState } from '../../runtime/company-events'
 import { EMPLOYEE_RUNTIME_LABEL, STATION_LABEL } from '../../runtime/company-events'
+import type { EmployeeGameState } from '../game/company-game'
 import { AssetImage } from './AssetImage'
 
 const BADGE: Partial<Record<EmployeeStatus, string>> = { thinking: '•••', blocked: '!', done: '✓' }
 
-/** 呼吸灯亮度：tick 唯一被允许的用途——纯装饰，不参与位置与业务状态（需求文档三十四条）。 */
+/** 呼吸灯亮度：tick 唯一被允许的用途——纯装饰，不参与位置与业务状态。 */
 function glowOpacity(pulse: number): number {
   const phase = ((pulse % 4) + 4) % 4
   return 0.55 + 0.35 * (phase === 3 ? 1 : phase / 3)
@@ -26,23 +27,18 @@ export function EmployeeSprite(props: {
   onOpenProfile: (staffId: string) => void
   /** 事件驱动状态：有就以它为准显示工具名 / 识图 / 装插件，没有就退回任务卡文案。 */
   runtime?: EmployeeRuntimeState | null
+  /** 持久化成长投影：XP / 等级 / 技能都来自 evolution.json 快照，绝不由动画自己生成。 */
+  growth?: EmployeeGameState | null
   /** 装饰用节拍。 */
   pulse?: number
 }) {
-  const { staff, status, placement, task, active, onSelect, onTalk, onOpenProfile, runtime } = props
+  const { staff, status, placement, task, active, onSelect, onTalk, onOpenProfile, runtime, growth } = props
   const pulse = props.pulse || 0
   const eventLabel = runtime && runtime.status !== 'idle' ? EMPLOYEE_RUNTIME_LABEL[runtime.status] : ''
   const statusText = eventLabel || EMPLOYEE_STATUS_LABEL[status]
-  // staff_chat 的 desc 是**老板刚说的那句话**（selectors 取的是 message 参数），不是员工在干的事。
-  // 行内也好、悬浮卡也好都不复述它：34 字的小泡里挂一句具体的话，扫一眼就成了「他正在做这件事」，
-  // 前缀根本来不及看。原话不删，只是留在右栏任务卡那个本来就标着「派活」的位置。
   const bossChat = task && task.tool === 'staff_chat' ? task : undefined
   const taskLine = task && !bossChat ? task.desc : ''
-  // 只报事实：面板收没收到回传。「面板没收到」不等于「员工没干活」，这两件事不许混成一句。
   const bossLine = bossChat ? `老板交办：${bossChat.running ? '面板暂未收到进展回传' : '结果见右栏任务卡'}` : ''
-  // 行内文案优先级：当前工具名 > 当前活动（会议/识图/装插件）> 真实任务描述 > 诚实的状态词。
-  // 子代理内部的工具调用不进父会话 node 流，所以经常什么细节都拿不到 ——
-  // 那种时候就老老实实显示「正在工作」，不拿老板自己的话冒充一个具体活动。
   const shortText = runtime?.tool
     ? clip(runtime.tool.label, 12)
     : runtime && runtime.status !== 'idle'
@@ -56,19 +52,37 @@ export function EmployeeSprite(props: {
       ? clip(taskLine, 34)
       : bossLine || placement.activity
   const station = runtime && runtime.station !== 'desk' ? STATION_LABEL[runtime.station] : ''
+  const growthLine = growth
+    ? `Lv.${growth.level} ${growth.title} · ${growth.workspaceTier}${growth.topSkill ? ` · ${growth.topSkill.name} Lv.${growth.topSkill.level}` : ''}`
+    : '成长档案尚未从 Host 读取'
+  // 只有 reducer 的最后真实事件就是 skill.updated 时才亮“技能↑”，tick 不参与判断。
+  const skillUp = !!runtime?.lastSkill && runtime.lastSkill.at === runtime.updatedAt
 
   return h('button', {
     type: 'button', className: `cy9-sprite ${status}${active ? ' active' : ''}`,
     'data-status': status,
     style: { left: placement.x, top: placement.y },
     onClick: () => onSelect(staff.id), onDoubleClick: () => onTalk(staff),
-    // 文案按真实事件处理对齐：单击 onSelect（选中并在办公室顶部展开操作栏），双击 onTalk（写 @ 草稿）。
-    // 小人只有几十像素、还可能被工作群面板压住一半，双击不一定两下都落在同一个元素上；
-    // 所以这里必须把「单击也能 @」的那条路一起说清楚，别让老板以为双击是唯一入口。
-    title: `${staff.name} · ${statusText}${station ? ` · ${station}` : ''} · 单击选中（办公室底部出现「@ ${staff.name}」按钮），双击直接 @ 本人`,
+    title: `${staff.name} · ${statusText}${station ? ` · ${station}` : ''}${growth ? ` · Lv.${growth.level} ${growth.title}` : ''} · 单击选中，双击直接 @ 本人`,
   },
     h('span', { className: 'cy9-sprite-img' },
       BADGE[status] ? h('span', { className: 'cy9-sprite-badge' }, BADGE[status]) : null,
+      growth ? h('span', {
+        title: `${growth.xp} XP · ${Math.round(growth.progress * 100)}% 到下一等级`,
+        style: {
+          position: 'absolute', left: -5, top: -8, zIndex: 5, minWidth: 28, padding: '1px 5px',
+          borderRadius: 999, border: '1px solid rgba(80,220,255,.55)', background: 'rgba(4,15,27,.94)',
+          color: '#a9efff', fontSize: 9, fontWeight: 800, lineHeight: '14px', textAlign: 'center',
+        },
+      }, `L${growth.level}`) : null,
+      skillUp ? h('span', {
+        title: `真实技能证据触发：${runtime!.lastSkill!.name}${runtime!.lastSkill!.level ? ` Lv.${runtime!.lastSkill!.level}` : ''}`,
+        style: {
+          position: 'absolute', right: -18, top: -10, zIndex: 5, padding: '1px 5px', borderRadius: 999,
+          border: '1px solid rgba(126,255,170,.65)', background: 'rgba(14,52,31,.94)', color: '#bfffd1',
+          fontSize: 8, fontWeight: 800, lineHeight: '14px', whiteSpace: 'nowrap',
+        },
+      }, '技能↑') : null,
       h(AssetImage, { src: staffSprite(staff.id), alt: staff.name, fallback: staff.name }),
       status === 'working' ? h('i', { className: 'cy9-monitor-glow', style: { opacity: glowOpacity(pulse) } }) : null,
     ),
@@ -76,8 +90,15 @@ export function EmployeeSprite(props: {
     h('span', { className: 'cy9-sprite-card' },
       h('b', null, staff.name), h('em', null, `${staff.role} · ${statusText}${station ? ` · ${station}` : ''}`),
       h('span', null, cardText),
+      h('span', { style: { color: '#78dff7', fontSize: 9 } }, growthLine),
+      growth ? h('span', { style: { display: 'flex', gap: 5, alignItems: 'center' } },
+        h('span', { style: { width: 86, height: 4, borderRadius: 999, overflow: 'hidden', background: 'rgba(255,255,255,.1)' } },
+          h('i', { style: { display: 'block', width: `${Math.round(growth.progress * 100)}%`, height: '100%', background: 'currentColor' } }),
+        ),
+        h('small', null, `${growth.xp} XP`),
+      ) : null,
       h('span', { className: 'cy9-sprite-actions' },
-        h('span', { role: 'button', tabIndex: 0, onClick: (event: any) => { event.stopPropagation(); onOpenProfile(staff.id) } }, '打开档案'),
+        h('span', { role: 'button', tabIndex: 0, onClick: (event: any) => { event.stopPropagation(); onOpenProfile(staff.id) } }, '成长档案'),
         h('span', { role: 'button', tabIndex: 0, onClick: (event: any) => { event.stopPropagation(); onTalk(staff) } }, '@ 本人'),
       ),
     ),
