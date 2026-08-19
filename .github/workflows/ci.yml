@@ -6,34 +6,17 @@ on:
   pull_request:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: feat/org-panel-20260817
       - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
-      # 单次发布迁移：只在本仓库这个 feature branch 上，让 npm 自己生成并提交准确 lock。
-      # 下一提交立即撤销 contents:write 和这段生成逻辑。
-      - run: npm install --package-lock-only --ignore-scripts --save-dev sharp@0.35.3
-      - name: Commit generated release lock
-        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/org-panel-20260817'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add package.json package-lock.json
-          if git diff --cached --quiet; then
-            echo "release lock already exact"
-          else
-            git commit -m "fix: commit npm-generated 2.0 release lock"
-            git push origin HEAD:feat/org-panel-20260817
-          fi
       - run: npm ci
       - run: npm audit --audit-level=high
       - run: npm run typecheck
